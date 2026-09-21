@@ -1,0 +1,12 @@
+[package]
+name = "RECallS"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+clap = { version = "4.6.6", features = ["derive"] }
+eyre = "0.6.14"
+itertools = "0.15.0"
+noodles = { version = "*", features = ["bam", "bgzf", "core", "fasta", "sam"] }
+petgraph = "0.8.3"
+rust-lapper = "2.0.0-beta.1"
