@@ -336,6 +336,11 @@ def main():
     # Draw inverted segment on plot
     midpt_1, midpt_2 = [int(pos) for pos in new_seq_fa.comment.split("-")]
 
+    # Write bed region
+    out_bed_file = f"{output_prefix}_event.bed"
+    with open(out_bed_file, "wt") as bfh:
+        print(chrom, midpt_1, midpt_2, sep="\t", file=bfh)
+
     # Then run mm2 again
     new_seq_fa_file = f"{output_prefix}_after_event.fa"
     with open(new_seq_fa_file, "wt") as fh:
