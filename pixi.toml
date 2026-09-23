@@ -1,0 +1,19 @@
+[workspace]
+authors = ["Keith Oshima <koshima789@gmail.com>"]
+channels = ["conda-forge", "bioconda"]
+name = "RECallS"
+platforms = ["linux-64"]
+version = "0.1.0"
+
+[tasks]
+
+[dependencies]
+samtools = { version = ">=1.24,<2", channel = "bioconda" }
+pysam = ">=0.24.1,<0.25"
+polars = ">=1.44.2,<2"
+matplotlib-base = ">=3.11.2,<4"
+python = "==3.13"
+intervaltree = ">=3.2.1,<4"
+longdust = ">=1.4,<2"
+badread = ">=0.4.2,<0.5"
+minimap2 = "==2.28"

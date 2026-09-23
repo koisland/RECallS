@@ -1,2 +1,7 @@
 /target
 *.graph
+out*
+
+# pixi environments
+.pixi/*
+!.pixi/config.toml
