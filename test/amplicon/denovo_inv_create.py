@@ -383,7 +383,7 @@ def main():
                     zorder=3,
                 )
             else:
-                ax.axvline(midpt_1, linestyle="dotted", color="black", label="Deletion")
+                ax.axvline(rotate(arr_st)[0], linestyle="dotted", color="black", label="Deletion")
 
         # Dedup legend
         handles, labels = ax.get_legend_handles_labels()

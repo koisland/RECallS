@@ -36,16 +36,9 @@ Normal reads
 badread simulate \
     --reference test/amplicon/chm13_chr7.fa.gz \
     --quantity 5x \
-    --error_model random \
-    --qscore_model ideal \
-    --glitches 0,0,0 \
-    --junk_reads 0 \
-    --random_reads 0 \
-    --chimeras 0 \
+    --error_model pacbio2021 \
+    --qscore_model pacbio2021 \
     --identity 30,3 \
-    --length 20000,2000 \
-    --start_adapter_seq "" \
-    --end_adapter_seq "" \
     --seed 42 \
     | bgzip > test/amplicon/chm13_chr7_sim_norm.fq.gz
 ```
@@ -56,16 +49,9 @@ for file in test/amplicon/chm13_chr7_sim_del_after_event.fa test/amplicon/chm13_
     badread simulate \
         --reference test/amplicon/chm13_chr7_sim_del_after_event.fa \
         --quantity 1x \
-        --error_model random \
-        --qscore_model ideal \
-        --glitches 0,0,0 \
-        --junk_reads 0 \
-        --random_reads 0 \
-        --chimeras 0 \
+        --error_model pacbio2021 \
+        --qscore_model pacbio2021 \
         --identity 30,3 \
-        --length 20000,2000 \
-        --start_adapter_seq "" \
-        --end_adapter_seq "" \
         --seed 42 \
         | bgzip >> test/amplicon/chm13_chr7_sim_events.fq.gz
 done

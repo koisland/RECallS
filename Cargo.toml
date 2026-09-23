@@ -6,7 +6,10 @@ edition = "2024"
 [dependencies]
 clap = { version = "4.6.6", features = ["derive"] }
 eyre = "0.6.14"
+integrate = "0.3.1"
 itertools = "0.15.0"
+kernel-density-estimation = "0.2.0"
+log = "0.4.34"
 noodles = { version = "*", features = ["bam", "bgzf", "core", "fasta", "sam"] }
 rammap-core = "1.1.2"
 rust-lapper = "2.0.0-beta.1"

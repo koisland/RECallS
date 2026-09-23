@@ -1,65 +1,31 @@
-use std::{collections::HashMap, ops::Bound};
+use std::path::Path;
 
-use eyre::bail;
+use clap::Parser;
+use eyre::ContextCompat;
 use noodles::{
-    bam::{self, Record},
-    core::{Position, Region},
+    bam,
+    core::Region,
     sam::alignment::record::{Flags, cigar::op::Kind},
+};
+
+use crate::{
+    cli::Args,
+    io::{aligned_intervals_windows, read_bed},
+    utils::{get_aligned_pairs, get_coords_from_region},
 };
 
 mod cli;
 mod dotplot;
+mod io;
+mod unbalanced_aln;
+mod utils;
 
-/// Convert cigar string to operations.
-/// * Adapted from <https://github.com/pysam-developers/pysam/blob/3e3c8b0b5ac066d692e5c720a85d293efc825200/pysam/libcalignedsegment.pyx#L2009>
-pub(crate) fn get_aligned_pairs(
-    cg: impl Iterator<Item = (Kind, usize)>,
-    pos: usize,
-) -> eyre::Result<Vec<(usize, usize, Kind)>> {
-    let mut pos: usize = pos;
-    let mut qpos: usize = 0;
-    let mut pairs = vec![];
-    // Matches only
-    for (op, l) in cg {
-        match op {
-            Kind::Match | Kind::SequenceMatch | Kind::SequenceMismatch => {
-                for i in pos..(pos + l) {
-                    pairs.push((qpos, i, op));
-                    qpos += 1
-                }
-                pos += l
-            }
-            // Track indels and softclips.
-            Kind::Pad | Kind::Insertion | Kind::SoftClip => {
-                qpos += l;
-                continue;
-            }
-            Kind::Deletion => {
-                for i in pos..(pos + l) {
-                    pairs.push((qpos, i, op));
-                }
-                pos += l
-            }
-            Kind::HardClip => {
-                continue;
-            }
-            Kind::Skip => pos += l,
-        }
-    }
-    Ok(pairs)
-}
-
-fn generate_mismatch_dag(aln: &str, region: Region) -> eyre::Result<()> {
-    let mut indexed_reader = bam::io::indexed_reader::Builder::default().build_from_path(&aln)?;
-    let header = indexed_reader.read_header()?;
-    let (Bound::Included(st), Bound::Included(end)) = (
-        region.start().map(|b| b.get()),
-        region.end().map(|b| b.get()),
-    ) else {
-        bail!("Invalid st or end")
-    };
+fn detect_events(bam: &Path, _fa: &Path, region: Region) -> eyre::Result<()> {
+    let mut fh = bam::io::indexed_reader::Builder::default().build_from_path(bam)?;
+    let header = fh.read_header()?;
+    let (st, end) = get_coords_from_region(&region)?;
     let length = end - st;
-    let query = indexed_reader.query(&header, &region)?;
+    let query = fh.query(&header, &region)?;
 
     // Global metrics
     let mut mapq: Vec<usize> = vec![0; length + 1];
@@ -93,6 +59,7 @@ fn generate_mismatch_dag(aln: &str, region: Region) -> eyre::Result<()> {
                     let qscore = qscores[qpos];
                     if qscore > 30 {
                         let nt = seq.get(qpos).unwrap();
+                        eprintln!("{nt}")
                     }
                     1
                 }
@@ -108,14 +75,22 @@ fn generate_mismatch_dag(aln: &str, region: Region) -> eyre::Result<()> {
 }
 
 fn main() -> eyre::Result<()> {
-    let bam = "test/CT22_ENA_CBCUDK010000011_CBCUDK010000011.1_6335921-6341074.bam";
-    // let fa = "test/CT22_ENA_CBCUDK010000011_CBCUDK010000011.1.fa.gz";
+    let args = Args::parse();
+
+    let bam = &args.bam;
+    let fa = &args.fa;
 
     // ENA_CBCUDK010000011_CBCUDK010000011.1:6334613-6342169
-    let region = Region::new(
-        "ENA_CBCUDK010000011_CBCUDK010000011.1",
-        Position::new(6317808).unwrap()..=Position::new(6359969).unwrap(),
-    );
-    generate_mismatch_dag(bam, region)?;
+    let regions = if let Some(bed) = &args.bed {
+        read_bed(bed.as_ref()).with_context(|| format!("No valid intervals in {bed:?}"))
+    } else {
+        let mut fh = bam::io::indexed_reader::Builder::default().build_from_path(bam)?;
+        aligned_intervals_windows(&mut fh, args.wg_window)
+    }?;
+
+    for region in regions {
+        detect_events(bam, fa, region)?;
+    }
+
     Ok(())
 }

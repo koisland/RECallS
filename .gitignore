@@ -1,6 +1,7 @@
 /target
 *.graph
 out*
+*.png
 
 # pixi environments
 .pixi/*
