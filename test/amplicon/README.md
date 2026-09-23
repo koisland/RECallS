@@ -1,4 +1,11 @@
 # Data
+
+## Usage
+```bash
+snakemake -c 8 -s test/amplicon/Snakefile -np
+```
+
+## Steps
 Extract CHM13 chromosome 7.
 ```bash
 samtools faidx /scratch/ucgd/lustre-labs/vollger/users/Keith/EldeLabRotation/data/annot/human/chm13v2.0.fa.gz chr7 \
@@ -47,7 +54,7 @@ Simulated reads from event
 ```bash
 for file in test/amplicon/chm13_chr7_sim_del_after_event.fa test/amplicon/chm13_chr7_sim_inv_after_event.fa; do
     badread simulate \
-        --reference test/amplicon/chm13_chr7_sim_del_after_event.fa \
+        --reference "${file}" \
         --quantity 1x \
         --error_model pacbio2021 \
         --qscore_model pacbio2021 \

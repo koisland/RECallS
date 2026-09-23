@@ -10,7 +10,7 @@ minimap -ax map-hifi -I8g --eqx "${sample}.fa.gz" "${sample}.fq.gz" \
 
 Then run:
 ```bash
-./target/release/RECallS call -i "${sample}.bam" -f "${sample}.fa.gz"
+./target/release/RECallS -i "${sample}.bam" -f "${sample}.fa.gz"
 ```
 
 ## Why?

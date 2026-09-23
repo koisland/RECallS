@@ -1,0 +1,121 @@
+from os.path import join
+
+FNAME_PREFIX = "chm13_chr7"
+OUTDIR = "test/amplicon"
+LOGDIR = "test/amplicon/logs"
+
+REF = join(OUTDIR, f"{FNAME_PREFIX}.fa.gz")
+SEEDS = [42, 120]
+EVENTS = ["inversion", "deletion"]
+
+
+rule get_lcr_regions:
+    input:
+        fa=REF
+    output:
+        bed=join(OUTDIR, f"{FNAME_PREFIX}_lcr.bed")
+    log:
+        join(LOGDIR, "get_lcr_regions.log")
+    shell:
+        """
+        longdust {input.fa} > {output.bed} 2> {log}
+        """
+
+
+rule simulate_nahr_event:
+    input:
+        fa=REF,
+        lcr_bed=rules.get_lcr_regions.output
+    output:
+        fa=join(OUTDIR, f"{FNAME_PREFIX}_sim_{{event}}_{{seed}}_after_event.fa"),
+        bed=join(OUTDIR, f"{FNAME_PREFIX}_sim_{{event}}_{{seed}}_after_event.bed"),
+    params:
+        seed="{seed}",
+        event="{event}",
+        min_plot_length=50_000,
+        output_prefix=lambda wc, output: output.fa.replace("_after_event.fa", ""),
+        script="test/amplicon/denovo_inv_create.py"
+    log:
+        join(LOGDIR, "simulate_{event}_{seed}.log")
+    shell:
+        """
+        python {params.script} \
+        -f {input.fa} \
+        -s {params.seed} \
+        -pl {params.min_plot_length} \
+        -n <(awk '$3-$2>500' {input.lcr_bed}) \
+        -e {params.event} \
+        -o {params.output_prefix} 2> {log}
+        """
+
+rule simulate_nahr_event_reads:
+    input:
+        fa=rules.simulate_nahr_event.output.fa
+    output:
+        fq=join(OUTDIR, f"{FNAME_PREFIX}_sim_{{event}}_{{seed}}.fq.gz"),
+    params:
+        seed="{seed}",
+        depth="1x",
+        error_model="pacbio2021",
+        qscore_model="pacbio2021",
+        identity="30,3",
+    log:
+        join(LOGDIR, "simulate_reads_{event}_{seed}.log")
+    shell:
+        """
+        badread simulate \
+        --reference {input.fa} \
+        --quantity {params.depth} \
+        --error_model {params.error_model} \
+        --qscore_model {params.qscore_model} \
+        --identity {params.identity} \
+        --seed {params.seed} 2> {log} | bgzip > {output.fq}
+        """
+
+use rule simulate_nahr_event_reads as simulate_normal_reads with:
+    input:
+        fa=REF,
+    output:
+        fq=join(OUTDIR, f"{FNAME_PREFIX}_sim_norm.fq.gz"),
+    log:
+        join(LOGDIR, "simulate_reads_norm.log")
+    params:
+        seed=9999,
+        depth="5x",
+        error_model="pacbio2021",
+        qscore_model="pacbio2021",
+        identity="30,3",
+
+rule dsa_align:
+    input:
+        ref=REF,
+        reads=[
+            rules.simulate_normal_reads.output,
+            expand(
+                rules.simulate_nahr_event_reads.output,
+                zip,
+                event=EVENTS,
+                seed=SEEDS
+            ),
+        ]
+    output:
+        bam=join(OUTDIR, f"{FNAME_PREFIX}_sim.bam"),
+        bai=join(OUTDIR, f"{FNAME_PREFIX}_sim.bam.bai"),
+    log:
+        join(LOGDIR, "dsa_align.log")
+    params:
+        preset="lr:hq",
+    threads:
+        8
+    shell:
+        """
+        {{ minimap2 -ax {params.preset} {input.ref} {input.reads} -t {threads} \
+            | samtools sort -u - \
+            | samtools view -bh -o {output.bam} ;}} 2> {log}
+        samtools index {output.bam} 2>> {log}
+        """
+    
+rule all:
+    default_target: True
+    input:
+        rules.dsa_align.output

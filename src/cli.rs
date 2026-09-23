@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use clap::Parser;
 
-/// Detect putative intrachromosomal recombination events
+/// Detect putative intrachromosomal recombination events from long-read sequencing of sperm data 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 pub struct Args {

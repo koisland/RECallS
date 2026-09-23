@@ -222,7 +222,7 @@ def main():
         "-d",
         "--max_dst_between",
         type=int,
-        default=50_000,
+        default=1_000_000,
         help="Maximum distance between homologous intervals for inversion.",
     )
     ap.add_argument(
