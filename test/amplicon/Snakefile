@@ -28,7 +28,7 @@ rule simulate_nahr_event:
         lcr_bed=rules.get_lcr_regions.output
     output:
         fa=join(OUTDIR, f"{FNAME_PREFIX}_sim_{{event}}_{{seed}}_after_event.fa"),
-        bed=join(OUTDIR, f"{FNAME_PREFIX}_sim_{{event}}_{{seed}}_after_event.bed"),
+        bed=join(OUTDIR, f"{FNAME_PREFIX}_sim_{{event}}_{{seed}}_event.bed"),
     params:
         seed="{seed}",
         event="{event}",
@@ -69,6 +69,7 @@ rule simulate_nahr_event_reads:
         --error_model {params.error_model} \
         --qscore_model {params.qscore_model} \
         --identity {params.identity} \
+        --start_adapter_seq "" --end_adapter_seq "" \
         --seed {params.seed} 2> {log} | bgzip > {output.fq}
         """
 

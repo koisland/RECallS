@@ -45,6 +45,7 @@ badread simulate \
     --quantity 5x \
     --error_model pacbio2021 \
     --qscore_model pacbio2021 \
+    --start_adapter_seq "" --end_adapter_seq "" \
     --identity 30,3 \
     --seed 42 \
     | bgzip > test/amplicon/chm13_chr7_sim_norm.fq.gz
@@ -58,6 +59,7 @@ for file in test/amplicon/chm13_chr7_sim_del_after_event.fa test/amplicon/chm13_
         --quantity 1x \
         --error_model pacbio2021 \
         --qscore_model pacbio2021 \
+        --start_adapter_seq "" --end_adapter_seq "" \
         --identity 30,3 \
         --seed 42 \
         | bgzip >> test/amplicon/chm13_chr7_sim_events.fq.gz

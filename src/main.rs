@@ -27,10 +27,6 @@ fn detect_events(bam: &Path, _fa: &Path, region: Region) -> eyre::Result<()> {
     let length = end - st;
     let query = fh.query(&header, &region)?;
 
-    // Global metrics
-    let mut mapq: Vec<usize> = vec![0; length + 1];
-    let mut cov: Vec<usize> = vec![0; length + 1];
-
     for rec in query
         .records()
         .flatten()
@@ -42,18 +38,18 @@ fn detect_events(bam: &Path, _fa: &Path, region: Region) -> eyre::Result<()> {
             rec.alignment_start().unwrap()?.get(),
         )?;
         let qscores = rec.quality_scores().as_bytes();
-        let rmapq = rec.mapping_quality().unwrap_or_default().get() as usize;
         let seq = rec.sequence();
 
+        // Look for:
+        // * unbalanced reads bordered by large indels. check secondary alignment
+        // * supplementary alignments on same chrom (for now)
         for (qpos, refpos, kind) in aln_pairs
             .into_iter()
             .filter(|(_, refpos, _)| *refpos >= st && *refpos <= end)
         {
-            let ipos = refpos - st;
-            let cnt = match kind {
-                Kind::SoftClip => 0,
-                Kind::Insertion => 0,
-                Kind::SequenceMatch | Kind::Deletion => 1,
+            match kind {
+                Kind::Insertion => {},
+                Kind::Deletion => {},
                 Kind::SequenceMismatch => {
                     // 0-93 ASCII+33 for pacbio
                     let qscore = qscores[qpos];
@@ -61,13 +57,9 @@ fn detect_events(bam: &Path, _fa: &Path, region: Region) -> eyre::Result<()> {
                         let nt = seq.get(qpos).unwrap();
                         eprintln!("{nt}")
                     }
-                    1
                 }
-                _ => 1,
+                _ => {},
             };
-            // Store coverage and MAPQ (total)
-            cov[ipos] += cnt;
-            mapq[ipos] += rmapq;
         }
     }
 
