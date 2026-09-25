@@ -1,2 +1,5 @@
 chm13_*
 logs
+!chm13_chr7.fa.gz
+!chm13_chr7.fa.gz.fai
+!chm13_chr7.fa.gz.gzi

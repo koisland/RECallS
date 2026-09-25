@@ -56,10 +56,15 @@ def main():
         # Take only aligned length
         read_aln_len = read.query_alignment_length
         mismatch_pos = []
-        for qpos, rpos, op in read.get_aligned_pairs(with_cigar=True):
+        qscores = read.query_alignment_qualities
+        if not qscores:
+            continue
+        for qpos, _, op in read.get_aligned_pairs(with_cigar=True):
             op = CIGAR_OPS[op]
             if op == "X":
-                mismatch_pos.append(qpos)
+                qscore = qscores[qpos] if qpos else 0
+                if qscore > 30:
+                    mismatch_pos.append(qpos)
         
         x = np.linspace(0, read_aln_len, window)
         midpt = read_aln_len / 2

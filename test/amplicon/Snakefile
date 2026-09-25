@@ -110,7 +110,7 @@ rule dsa_align:
         8
     shell:
         """
-        {{ minimap2 -ax {params.preset} {input.ref} {input.reads} -t {threads} \
+        {{ minimap2 --eqx -ax {params.preset} {input.ref} {input.reads} -t {threads} \
             | samtools sort -u - \
             | samtools view -bh -o {output.bam} ;}} 2> {log}
         samtools index {output.bam} 2>> {log}

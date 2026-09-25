@@ -5,12 +5,16 @@ use eyre::ContextCompat;
 use noodles::{
     bam,
     core::Region,
-    sam::alignment::record::{Flags, cigar::op::Kind},
+    sam::alignment::{
+        Record,
+        record::{Flags, cigar::op::Kind},
+    },
 };
 
 use crate::{
     cli::Args,
     io::{aligned_intervals_windows, read_bed},
+    unbalanced_aln::is_unbalanced_alignment,
     utils::{get_aligned_pairs, get_coords_from_region},
 };
 
@@ -32,6 +36,7 @@ fn detect_events(bam: &Path, _fa: &Path, region: Region) -> eyre::Result<()> {
         .flatten()
         .filter(|aln| !aln.flags().contains(Flags::SECONDARY))
     {
+        let rname = rec.name().unwrap();
         let cg: bam::record::Cigar<'_> = rec.cigar();
         let aln_pairs = get_aligned_pairs(
             cg.iter().flatten().map(|op| (op.kind(), op.len())),
@@ -39,27 +44,43 @@ fn detect_events(bam: &Path, _fa: &Path, region: Region) -> eyre::Result<()> {
         )?;
         let qscores = rec.quality_scores().as_bytes();
         let seq = rec.sequence();
+        let is_suppl = rec.flags().contains(Flags::SUPPLEMENTARY);
+        // if is_suppl {
+        // if verbose {
+        //     eprintln!("{:?}\n{:?}", rec.flags(), rec.data())
+        // }
+        let aln_len = rec.alignment_span().unwrap()? as f64;
 
         // Look for:
         // * unbalanced reads bordered by large indels. check secondary alignment
         // * supplementary alignments on same chrom (for now)
+        let mut mismatch_qpos = vec![];
         for (qpos, refpos, kind) in aln_pairs
             .into_iter()
             .filter(|(_, refpos, _)| *refpos >= st && *refpos <= end)
         {
             match kind {
-                Kind::Insertion => {},
-                Kind::Deletion => {},
+                Kind::Insertion => {}
+                Kind::Deletion => {}
                 Kind::SequenceMismatch => {
                     // 0-93 ASCII+33 for pacbio
                     let qscore = qscores[qpos];
                     if qscore > 30 {
                         let nt = seq.get(qpos).unwrap();
-                        eprintln!("{nt}")
+                        mismatch_qpos.push(qpos as f64);
                     }
                 }
-                _ => {},
+                _ => {}
             };
+        }
+        let is_unbalanced = is_unbalanced_alignment(&mismatch_qpos, aln_len, 5, false)?;
+        if is_unbalanced {
+            let (st, end) = (
+                rec.alignment_start().unwrap().map(|p| p.get())?,
+                rec.alignment_end().unwrap().map(|p| p.get())?,
+            );
+            let rname = str::from_utf8(rname)?;
+            println!("{rname}:{st}-{end}, {mismatch_qpos:?}",)
         }
     }
 
@@ -81,6 +102,7 @@ fn main() -> eyre::Result<()> {
     }?;
 
     for region in regions {
+        eprintln!("On {region}...");
         detect_events(bam, fa, region)?;
     }
 
