@@ -6,7 +6,7 @@ use noodles::{
     bam::{self},
     core::{Position, Region},
     sam::alignment::{
-        RecordBuf,
+        Record, RecordBuf,
         io::Write,
         record::{Flags, cigar::op::Kind, data::field::Tag},
         record_buf::data::field::Value,
@@ -15,11 +15,7 @@ use noodles::{
 use rust_lapper::{Interval, Lapper};
 
 use crate::{
-    baseline::calculate_mean_indel_rate,
-    cli::Args,
-    io::{aligned_intervals_windows, read_bed},
-    unbalanced_aln::is_unbalanced_alignment,
-    utils::get_aligned_pairs,
+    baseline::{ReadSummaryStats, calculate_stats_indel_rate}, cli::Args, io::{aligned_intervals_windows, read_bed}, unbalanced_aln::{UnbalancedSummary, is_unbalanced_alignment}, utils::get_aligned_pairs,
 };
 
 mod baseline;
@@ -29,13 +25,32 @@ mod io;
 mod unbalanced_aln;
 mod utils;
 
+struct Event {
+    chrom: String,
+    start: usize,
+    stop: usize,
+    rname: String,
+    n_indels: usize,
+    aln_len: f64,
+    is_secondary: bool,
+    unbalanced_summary: Option<UnbalancedSummary>
+}
+impl Event {
+    fn as_bed(&self) -> String {
+        format!(
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:?}",
+            self.chrom, self.start, self.stop, self.rname, self.n_indels, self.aln_len, self.is_secondary, self.unbalanced_summary
+        )
+    }
+}
+
 fn detect_events(
     bam: &Path,
     _fa: &Path,
     itv: &Interval<usize, String>,
-    indel_rate: (f64, f64),
+    read_stats: &ReadSummaryStats,
     ignore_bed: &HashMap<String, Lapper<usize, String>>,
-) -> eyre::Result<()> {
+) -> eyre::Result<Vec<Event>> {
     let mut fh = bam::io::indexed_reader::Builder::default().build_from_path(bam)?;
     let header = fh.read_header()?;
     let chrom = &itv.val;
@@ -54,10 +69,12 @@ fn detect_events(
     // let mut out_bam = bam::io::Writer::new(outfile);
     // out_bam.write_header(&header)?;
 
+    let indel_read_stats = [&read_stats.primary, &read_stats.secondary];
+    let mut events = vec![];
+
     for rec in query
         .records()
         .flatten()
-        .filter(|aln| !aln.flags().contains(Flags::SECONDARY))
     {
         let rname = rec.name().unwrap();
         let cg: bam::record::Cigar<'_> = rec.cigar();
@@ -66,10 +83,10 @@ fn detect_events(
             rec.alignment_start().unwrap()?.get(),
         )?;
         let qscores = rec.quality_scores().as_bytes();
-        let seq = rec.sequence();
         let is_suppl = rec.flags().contains(Flags::SUPPLEMENTARY);
+        let is_sec = rec.flags().contains(Flags::SECONDARY);
+        let typ_read_stats = &indel_read_stats[is_sec as usize];
         // if is_suppl {
-        // if verbose {
         //     eprintln!("{:?}\n{:?}", rec.flags(), rec.data())
         // }
         let aln_len = noodles::sam::alignment::Record::alignment_span(&rec).unwrap()? as f64;
@@ -77,31 +94,49 @@ fn detect_events(
         // Look for:
         // * unbalanced reads bordered by large indels. check secondary alignment
         // * supplementary alignments on same chrom (for now)
-        let mut mismatch_qpos = vec![];
-        for (qpos, refpos, kind) in aln_pairs.into_iter().filter(|(_, refpos, _)| {
+        let mut marker_qpos = vec![];
+        let mut n_indels: usize = 0;
+        for (qpos, _, kind) in aln_pairs.into_iter().filter(|(_, refpos, _)| {
             *refpos >= st && *refpos <= end && itree_ignore.count(*refpos, *refpos) == 0
         }) {
             match kind {
-                Kind::Insertion => {}
-                Kind::Deletion => {}
+                Kind::Insertion | Kind::Deletion => {
+                    n_indels += 1;
+                }
                 Kind::SequenceMismatch => {
                     // 0-93 ASCII+33 for pacbio
-                    let qscore = qscores[qpos];
-                    if qscore > 30 {
-                        let nt = seq.get(qpos).unwrap();
-                        mismatch_qpos.push(qpos as f64);
+                    let Some(qscore) = qscores.get(qpos) else {
+                        continue;
+                    };
+                    if *qscore > 30 {
+                        marker_qpos.push(qpos as f64);
                     }
                 }
                 _ => {}
             };
         }
-        let is_unbalanced = is_unbalanced_alignment(&mismatch_qpos, aln_len, 5, false)?;
+
+        let indel_rate_zscore = typ_read_stats.zscore(n_indels as f64 / aln_len);
+        let is_unbalanced = is_unbalanced_alignment(&marker_qpos, aln_len, 5)?;
+
+        if indel_rate_zscore > 3.4 && aln_len > 10_000.0 {
+            let (rst, rend) = (
+                rec.alignment_start().unwrap().map(|p| p.get())?,
+                rec.alignment_end().unwrap().map(|p| p.get())?,
+            );
+            let event = Event {
+                chrom: chrom.to_owned(),
+                start: rst,
+                stop: rend,
+                rname: String::from_utf8(rname.to_vec())?,
+                n_indels,
+                aln_len,
+                is_secondary: is_sec,
+                unbalanced_summary: is_unbalanced,
+            };
+            events.push(event);
+        }
         // if is_unbalanced {
-        //     // let (st, end) = (
-        //     //     rec.alignment_start().unwrap().map(|p| p.get())?,
-        //     //     rec.alignment_end().unwrap().map(|p| p.get())?,
-        //     // );
-        //     // let rname = str::from_utf8(rname)?;
         //     let mut record_buf = RecordBuf::try_from_alignment_record(&header, &rec)?;
         //     let data = record_buf.data_mut();
         //     data.insert(Tag::new(b'U', b'B'), Value::from(1));
@@ -112,7 +147,7 @@ fn detect_events(
     }
 
     // bam::fs::index(outfile_name)?;
-    Ok(())
+    Ok(events)
 }
 
 fn main() -> eyre::Result<()> {
@@ -151,30 +186,55 @@ fn main() -> eyre::Result<()> {
         "Computing indel rates across {} chromosome(s).",
         ignore_bed.len()
     );
-    let mut indel_rates: HashMap<String, (Vec<f64>, Vec<f64>)> = HashMap::new();
-    for region in regions.values().flatten() {
-        let (prim_indel_rate, sec_indel_rate) =
-            calculate_mean_indel_rate(bam, region, &ignore_bed)?;
-        if let Some((prim_indel_rates, sec_indel_rates)) = indel_rates.get_mut(&region.val) {
-            prim_indel_rates.push(prim_indel_rate);
-            sec_indel_rates.push(sec_indel_rate);
-        } else {
-            indel_rates.insert(
-                region.val.to_owned(),
-                (vec![prim_indel_rate], vec![sec_indel_rate]),
-            );
-        }
-    }
-    let indel_rates: HashMap<String, (f64, f64)> = indel_rates
-        .into_iter()
-        .map(|(chrom, (prim_indel_rates, sec_indel_rates))| {
-            let prim_indel_rate =
-                prim_indel_rates.iter().sum::<f64>() / prim_indel_rates.len() as f64;
-            let sec_indel_rate = sec_indel_rates.iter().sum::<f64>() / sec_indel_rates.len() as f64;
-            (chrom, (prim_indel_rate, sec_indel_rate))
+
+    // https://stats.stackexchange.com/a/26647
+    let mut chrom_read_stats = regions
+        .values()
+        .flatten()
+        .map(|region| {
+            (
+                region.val.clone(),
+                calculate_stats_indel_rate(bam, region, &ignore_bed).unwrap(),
+            )
         })
-        .collect();
-    eprintln!("{indel_rates:?}");
+        .fold(
+            HashMap::new(),
+            |mut acc: HashMap<String, ReadSummaryStats>, (chrom, (prim_stats, sec_stats))| {
+                if let Some(read_stats) = acc.get_mut(&chrom) {
+                    read_stats.primary.mean =
+                        read_stats.primary.mean.algebraic_add(prim_stats.mean);
+                    read_stats.primary.var = read_stats.primary.var.algebraic_add(prim_stats.var);
+                    read_stats.primary.n += prim_stats.n;
+                    read_stats.secondary.mean =
+                        read_stats.secondary.mean.algebraic_add(sec_stats.mean);
+                    read_stats.secondary.var =
+                        read_stats.secondary.var.algebraic_add(sec_stats.var);
+                    read_stats.secondary.n += sec_stats.n;
+                } else {
+                    acc.insert(
+                        chrom.to_owned(),
+                        ReadSummaryStats {
+                            primary: prim_stats,
+                            secondary: sec_stats,
+                        },
+                    );
+                }
+                acc
+            },
+        );
+    for val in chrom_read_stats.values_mut() {
+        let prim = &mut val.primary;
+        let sec = &mut val.secondary;
+        // Update mean
+        prim.mean /= prim.n as f64;
+        sec.mean /= sec.n as f64;
+        // Update variance
+        prim.var /= prim.n as f64;
+        sec.var /= sec.n as f64;
+        // Update stdev
+        prim.stdev = prim.var.sqrt();
+        sec.stdev = sec.var.sqrt();
+    }
 
     eprintln!(
         "Detecting events across {} window(s) in {} chromosome(s).",
@@ -182,10 +242,27 @@ fn main() -> eyre::Result<()> {
         ignore_bed.len()
     );
 
+    let mut read_events: HashMap<String, Vec<Event>> = HashMap::new();
     for region in regions.values().flatten() {
-        let indel_rate = indel_rates[&region.val];
+        let read_stats = &chrom_read_stats[&region.val];
         eprintln!("On {region:?}...");
-        detect_events(bam, fa, region, indel_rate, &ignore_bed)?;
+        let events = detect_events(bam, fa, region, read_stats, &ignore_bed)?;
+        for event in events {
+            if let Some(read_events) = read_events.get_mut(&event.rname) {
+                read_events.push(event);
+            } else {
+                read_events.insert(event.rname.to_owned(), vec![event]);
+            }
+        }
+    }
+    // Must have more than one event per read 
+    // Must have at least one primary alignment
+    read_events.retain(|_, v| v.len() > 1 && v.iter().any(|e| !e.is_secondary));
+
+    for (_, events) in read_events {
+        for event in events {
+            println!("{}", event.as_bed())
+        }
     }
 
     Ok(())

@@ -10,12 +10,56 @@ use noodles::{
 };
 use rust_lapper::{Interval, Lapper};
 
+#[derive(Debug)]
+pub struct ReadSummaryStats {
+    pub primary: SummaryStats,
+    pub secondary: SummaryStats,
+}
+
+#[derive(Debug, Default)]
+pub struct SummaryStats {
+    pub mean: f64,
+    pub var: f64,
+    pub stdev: f64,
+    pub n: usize,
+}
+
+// https://rust-lang-nursery.github.io/rust-cookbook/science/mathematics/statistics.html
+impl SummaryStats {
+    pub fn new(data: &[f64]) -> Self {
+        let n = data.len() as f64;
+        if n == 0.0 {
+            return SummaryStats::default();
+        }
+        let mean = data.iter().sum::<f64>() / n;
+        let var = data
+            .iter()
+            .map(|value| {
+                let diff = mean - (*value as f64);
+                diff * diff
+            })
+            .sum::<f64>()
+            / n;
+        return Self {
+            mean,
+            var,
+            stdev: var.sqrt(),
+            n: data.len(),
+        };
+    }
+
+    pub fn zscore(&self, x: f64) -> f64 {
+        let diff = x - self.mean;
+        diff / self.stdev
+    }
+}
+
 /// Calculate mean indel rate for primary/supplementary and secondary alignments as prior
-pub fn calculate_mean_indel_rate(
+pub fn calculate_stats_indel_rate(
     bam: &Path,
     itv: &Interval<usize, String>,
     ignore_bed: &HashMap<String, Lapper<usize, String>>,
-) -> eyre::Result<(f64, f64)> {
+) -> eyre::Result<(SummaryStats, SummaryStats)> {
     let mut fh = bam::io::indexed_reader::Builder::default().build_from_path(bam)?;
     let header = fh.read_header()?;
     let chrom = &itv.val;
@@ -34,8 +78,7 @@ pub fn calculate_mean_indel_rate(
     let query = fh.query(&header, &region)?;
 
     // Primary, secondary
-    let mut n_reads: [usize; 2] = [0, 0];
-    let mut sum_perc_indel: [f64; 2] = [0f64, 0f64];
+    let mut both_perc_indel: [Vec<f64>; 2] = [vec![], vec![]];
 
     // Iter thru all records
     for rec in query.records().flatten() {
@@ -84,23 +127,11 @@ pub fn calculate_mean_indel_rate(
         if adj_aln_len != 0.0 {
             let perc_indel = (indel_len as f64) / adj_aln_len;
             // Add to 0 (primary/suppl) or 1 (secondary)
-            sum_perc_indel[idx] = sum_perc_indel[idx].algebraic_add(perc_indel);
-            n_reads[idx] += 1;
+            both_perc_indel[idx].push(perc_indel);
         }
     }
-    let prim_n_reads_indel = n_reads[0] as f64;
-    let prim_sum_perc_indel = sum_perc_indel[0];
-    let sec_n_reads_indel = n_reads[1] as f64;
-    let sec_sum_perc_indel = sum_perc_indel[1];
-    let prim_avg_indel = if prim_n_reads_indel == 0.0 {
-        0.0
-    } else {
-        prim_sum_perc_indel / prim_n_reads_indel
-    };
-    let sec_avg_indel = if sec_n_reads_indel == 0.0 {
-        0.0
-    } else {
-        sec_sum_perc_indel / sec_n_reads_indel
-    };
-    Ok((prim_avg_indel, sec_avg_indel))
+
+    let stats_prim_perc_indel = SummaryStats::new(&both_perc_indel[0]);
+    let stats_sec_perc_indel = SummaryStats::new(&both_perc_indel[1]);
+    Ok((stats_prim_perc_indel, stats_sec_perc_indel))
 }

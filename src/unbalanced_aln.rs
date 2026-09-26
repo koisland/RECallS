@@ -1,6 +1,13 @@
 use integrate::prelude::*;
 use kernel_density_estimation::prelude::*;
 
+#[derive(Debug)]
+pub struct UnbalancedSummary {
+    pub is_unbalanced: bool,
+    pub integral_left: f64,
+    pub integral_right: f64,
+}
+
 /// Checks if the alignment is "unbalanced" where mismatches are localized to one end of the read.
 /// * Generates a 1D KDE of mismatched positions
 /// * Finds area under PDF on both ends
@@ -15,37 +22,46 @@ use kernel_density_estimation::prelude::*;
 /// # Returns
 /// * If is an unbalanced alignment
 pub fn is_unbalanced_alignment(
-    mismatch_pos: &[f64],
+    marker_qpos: &[f64],
     read_len: f64,
     min_n_events: usize,
-    verbose: bool,
-) -> eyre::Result<bool> {
-    if mismatch_pos.is_empty() || mismatch_pos.len() < min_n_events {
-        return Ok(false);
+) -> eyre::Result<Option<UnbalancedSummary>> {
+    if marker_qpos.is_empty() || marker_qpos.len() < min_n_events {
+        return Ok(None);
     }
     // Get midpoint of read
     let midpt = read_len / 2.0;
     let (left_lower, left_upper) = (0f64, midpt);
     let (right_lower, right_upper) = (midpt, read_len);
 
-    if !mismatch_pos.is_empty() {
+    if !marker_qpos.is_empty() {
         // Calculate PDF of read mismatch positions
-        let kde =
-            KernelDensityEstimator::new(mismatch_pos, |data: &[f64]| Scott.bandwidth(data), Normal);
-
+        // https://aakinshin.net/posts/kde-bw/
+        let kde = KernelDensityEstimator::new(
+            marker_qpos,
+            |data: &[f64]| Silverman.bandwidth(data),
+            Normal,
+        );
         // Find area under curve of left and right side
         let (integral_left, _) =
-            gauss_kronrod_rule(|x| kde.pdf(&[x])[0], left_lower, left_upper, 7).unwrap();
+            gauss_kronrod_rule(|x| kde.pdf(&[x])[0], left_lower, left_upper, 7)
+                .map_err(|err| eyre::Report::msg(err))?;
         let (integral_right, _) =
-            gauss_kronrod_rule(|x| kde.pdf(&[x])[0], right_lower, right_upper, 7).unwrap();
+            gauss_kronrod_rule(|x| kde.pdf(&[x])[0], right_lower, right_upper, 7)
+                .map_err(|err| eyre::Report::msg(err))?;
+
+        // if integral_left.is_nan() || integral_right.is_nan() {
+        //     eprintln!("{marker_qpos:?}")
+        // }
 
         let abs_diff_area = (integral_left - integral_right).abs();
-        if verbose {
-            eprintln!("{integral_left},{integral_right},{mismatch_pos:?}")
-        }
-        Ok(abs_diff_area > 0.5)
+        Ok(Some(UnbalancedSummary {
+            is_unbalanced: abs_diff_area > 0.4,
+            integral_left,
+            integral_right,
+        }))
     } else {
-        return Ok(false);
+        return Ok(None);
     }
 }
 
@@ -136,7 +152,10 @@ mod test {
             .map(|(rname, (mismatch_pos, read_len))| {
                 (
                     rname,
-                    is_unbalanced_alignment(&mismatch_pos, read_len, 5, false).unwrap(),
+                    is_unbalanced_alignment(&mismatch_pos, read_len, 5)
+                        .unwrap()
+                        .unwrap()
+                        .is_unbalanced,
                 )
             })
             .sorted_by(|a, b| a.0.cmp(&b.0))
