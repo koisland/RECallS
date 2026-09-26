@@ -8,6 +8,11 @@ minimap -ax map-hifi -I8g --eqx "${sample}.fa.gz" "${sample}.fq.gz" \
     | samtools view -F 4 -bh -o "${sample}.bam"
 ```
 
+Compile (Requires rustc >=1.98.0)
+```bash
+cargo build --release
+```
+
 Then run:
 ```bash
 ./target/release/RECallS -i "${sample}.bam" -f "${sample}.fa.gz"

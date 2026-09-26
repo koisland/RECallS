@@ -19,7 +19,7 @@ pub struct Args {
     pub bed: Option<PathBuf>,
 
     /// BED file to ignore
-    #[arg[short, long]]
+    #[arg[short = 'n', long, default_value = Some("test/amplicon/chm13_chr7_lcr.bed")]]
     pub ignore_bed: Option<PathBuf>,
 
     /// Whole genome window size if no bed file provided.

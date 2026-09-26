@@ -1,16 +1,25 @@
-use scirs2_integrate::quad::{QuadOptions, quad};
-use scirs2_stats::kde::KernelDensityEstimate;
+use integrate::prelude::*;
+use kernel_density_estimation::prelude::*;
 
+/// Checks if the alignment is "unbalanced" where mismatches are localized to one end of the read.
+/// * Generates a 1D KDE of mismatched positions
+/// * Finds area under PDF on both ends
+/// * Subtract each side to get absolute difference
+/// * If greater than 50%, is considered unbalanced
+///
+/// # Arguments
+/// * mismatch_pos: all mismatch positions on read
+/// * read_len: read length
+/// * min_n_events: minimum number of events to consider alignment
+///
+/// # Returns
+/// * If is an unbalanced alignment
 pub fn is_unbalanced_alignment(
     mismatch_pos: &[f64],
     read_len: f64,
     min_n_events: usize,
     verbose: bool,
 ) -> eyre::Result<bool> {
-    let quad_opts = QuadOptions {
-        max_evals: 10000,
-        ..Default::default()
-    };
     if mismatch_pos.is_empty() || mismatch_pos.len() < min_n_events {
         return Ok(false);
     }
@@ -19,25 +28,17 @@ pub fn is_unbalanced_alignment(
     let (left_lower, left_upper) = (0f64, midpt);
     let (right_lower, right_upper) = (midpt, read_len);
 
-    // TODO: Also check that mismatches covers equal amount.
     if !mismatch_pos.is_empty() {
         // Calculate PDF of read mismatch positions
-        let kde = KernelDensityEstimate::new(mismatch_pos, scirs2_stats::Kernel::Gaussian);
+        let kde =
+            KernelDensityEstimator::new(mismatch_pos, |data: &[f64]| Scott.bandwidth(data), Normal);
+
         // Find area under curve of left and right side
-        let res_left = quad(
-            |x| kde.evaluate(x),
-            left_lower,
-            left_upper,
-            Some(quad_opts.clone()),
-        )?;
-        let res_right = quad(
-            |x| kde.evaluate(x),
-            right_lower,
-            right_upper,
-            Some(quad_opts),
-        )?;
-        let integral_left = res_left.value;
-        let integral_right = res_right.value;
+        let (integral_left, _) =
+            gauss_kronrod_rule(|x| kde.pdf(&[x])[0], left_lower, left_upper, 7).unwrap();
+        let (integral_right, _) =
+            gauss_kronrod_rule(|x| kde.pdf(&[x])[0], right_lower, right_upper, 7).unwrap();
+
         let abs_diff_area = (integral_left - integral_right).abs();
         if verbose {
             eprintln!("{integral_left},{integral_right},{mismatch_pos:?}")
@@ -117,7 +118,7 @@ mod test {
     }
 
     #[test]
-    fn test_check_read() -> eyre::Result<()> {
+    fn test_check_unbalanced_read() -> eyre::Result<()> {
         let reads: HashSet<&str> = HashSet::from_iter([
             "m84108_241123_231350_s2/62194242",
             "m84108_241123_231350_s2/93456693",

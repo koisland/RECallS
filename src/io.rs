@@ -1,18 +1,16 @@
 use std::{
+    collections::HashMap,
     fs::File,
     io::{BufRead, BufReader},
     path::Path,
 };
 
 use itertools::Itertools;
-use noodles::{
-    bam::io::indexed_reader,
-    bgzf,
-    core::{Position, Region},
-};
+use noodles::{bam::io::indexed_reader, bgzf};
+use rust_lapper::Interval;
 
-pub fn read_bed(bed: &Path) -> Option<Vec<Region>> {
-    let mut intervals = Vec::new();
+pub fn read_bed(bed: &Path) -> Option<HashMap<String, Vec<Interval<usize, String>>>> {
+    let mut intervals: HashMap<String, Vec<Interval<usize, String>>> = HashMap::new();
     let bed_fh = File::open(bed).expect("Cannot open bedfile");
     let bed_reader = BufReader::new(bed_fh);
 
@@ -34,11 +32,16 @@ pub fn read_bed(bed: &Path) -> Option<Vec<Region>> {
             log::error!("Cannot parse {start} or {stop} in line: '{line}'");
             continue;
         };
-
-        intervals.push(Region::new(
-            name,
-            Position::new(start)?..=Position::new(stop)?,
-        ))
+        let itv = Interval {
+            start,
+            stop,
+            val: name.to_owned(),
+        };
+        if let Some(itvs) = intervals.get_mut(name) {
+            itvs.push(itv);
+        } else {
+            intervals.insert(name.to_owned(), vec![itv]);
+        }
     }
     Some(intervals)
 }
@@ -46,7 +49,7 @@ pub fn read_bed(bed: &Path) -> Option<Vec<Region>> {
 pub fn aligned_intervals_windows(
     fh: &mut indexed_reader::IndexedReader<bgzf::io::Reader<File>>,
     window: usize,
-) -> eyre::Result<Vec<Region>> {
+) -> eyre::Result<HashMap<String, Vec<Interval<usize, String>>>> {
     let header = fh.read_header()?;
     Ok(header
         .reference_sequences()
@@ -55,21 +58,30 @@ pub fn aligned_intervals_windows(
             let length: usize = ref_seq.length().get();
             let (num, rem) = (length / window, length % window);
             let final_start = num * window;
-            let final_itv = Region::new(
-                ctg.to_owned(),
-                Position::new(final_start).unwrap()..=Position::new(final_start + rem).unwrap(),
-            );
+            let final_itv = Interval {
+                start: final_start,
+                stop: final_start + rem,
+                val: ctg.to_string(),
+            };
             (1..num + 1)
                 .map(move |i| {
                     // One-based half closed, half closed intervals
                     let start = ((i - 1) * window).clamp(1, usize::MAX);
                     let stop = (i * window).clamp(1, usize::MAX);
-                    Region::new(
-                        ctg.to_owned(),
-                        Position::new(start).unwrap()..=Position::new(stop).unwrap(),
-                    )
+                    Interval {
+                        start,
+                        stop,
+                        val: ctg.to_string(),
+                    }
                 })
                 .chain([final_itv])
         })
-        .collect())
+        .fold(HashMap::new(), |mut acc, itv| {
+            if let Some(itvs) = acc.get_mut(&itv.val) {
+                itvs.push(itv);
+            } else {
+                acc.insert(itv.val.to_owned(), vec![itv]);
+            }
+            acc
+        }))
 }
