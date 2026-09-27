@@ -1,9 +1,8 @@
-use eyre::bail;
 use rammap::Strand;
 use rammap::align::map::AlignFlags;
 use rammap::api::{Aligner, Preset, apply_preset_str};
 
-fn run_whole_contig_dotplot(path: &str, chrom: &str) -> eyre::Result<()> {
+fn _run_whole_contig_dotplot(path: &str, _chrom: &str) -> eyre::Result<()> {
     let mut aligner = Aligner::from_fasta(path, Preset::MapOnt)?;
     // -PD -k19 -w19 -m200
     // https://lh3.github.io/minimap2/minimap2.html#10

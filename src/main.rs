@@ -1,4 +1,8 @@
-use std::{collections::HashMap, fs::File, io::BufWriter, path::Path};
+use std::{
+    collections::HashMap,
+    path::Path,
+    // fs::File, io::BufWriter
+};
 
 use clap::Parser;
 use eyre::ContextCompat;
@@ -6,16 +10,25 @@ use noodles::{
     bam::{self},
     core::{Position, Region},
     sam::alignment::{
-        Record, RecordBuf,
-        io::Write,
-        record::{Flags, cigar::op::Kind, data::field::Tag},
-        record_buf::data::field::Value,
+        Record,
+        // RecordBuf,
+        // io::Write,
+        record::{
+            Flags,
+            cigar::op::Kind,
+            // data::field::Tag
+        },
+        // record_buf::data::field::Value,
     },
 };
 use rust_lapper::{Interval, Lapper};
 
 use crate::{
-    baseline::{ReadSummaryStats, calculate_stats_indel_rate}, cli::Args, io::{aligned_intervals_windows, read_bed}, unbalanced_aln::{UnbalancedSummary, is_unbalanced_alignment}, utils::get_aligned_pairs,
+    baseline::{ReadSummaryStats, calculate_stats_indel_rate},
+    cli::Args,
+    io::{aligned_intervals_windows, read_bed},
+    unbalanced_aln::{UnbalancedSummary, is_unbalanced_alignment},
+    utils::get_aligned_pairs,
 };
 
 mod baseline;
@@ -33,13 +46,20 @@ struct Event {
     n_indels: usize,
     aln_len: f64,
     is_secondary: bool,
-    unbalanced_summary: Option<UnbalancedSummary>
+    unbalanced_summary: Option<UnbalancedSummary>,
 }
 impl Event {
     fn as_bed(&self) -> String {
         format!(
             "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:?}",
-            self.chrom, self.start, self.stop, self.rname, self.n_indels, self.aln_len, self.is_secondary, self.unbalanced_summary
+            self.chrom,
+            self.start,
+            self.stop,
+            self.rname,
+            self.n_indels,
+            self.aln_len,
+            self.is_secondary,
+            self.unbalanced_summary
         )
     }
 }
@@ -72,10 +92,7 @@ fn detect_events(
     let indel_read_stats = [&read_stats.primary, &read_stats.secondary];
     let mut events = vec![];
 
-    for rec in query
-        .records()
-        .flatten()
-    {
+    for rec in query.records().flatten() {
         let rname = rec.name().unwrap();
         let cg: bam::record::Cigar<'_> = rec.cigar();
         let aln_pairs = get_aligned_pairs(
@@ -83,7 +100,7 @@ fn detect_events(
             rec.alignment_start().unwrap()?.get(),
         )?;
         let qscores = rec.quality_scores().as_bytes();
-        let is_suppl = rec.flags().contains(Flags::SUPPLEMENTARY);
+        // let is_suppl = rec.flags().contains(Flags::SUPPLEMENTARY);
         let is_sec = rec.flags().contains(Flags::SECONDARY);
         let typ_read_stats = &indel_read_stats[is_sec as usize];
         // if is_suppl {
@@ -117,7 +134,7 @@ fn detect_events(
         }
 
         let indel_rate_zscore = typ_read_stats.zscore(n_indels as f64 / aln_len);
-        let is_unbalanced = is_unbalanced_alignment(&marker_qpos, aln_len, 5)?;
+        let is_unbalanced = is_unbalanced_alignment(&marker_qpos, aln_len, 5, 0.33)?;
 
         if indel_rate_zscore > 3.4 && aln_len > 10_000.0 {
             let (rst, rend) = (
@@ -160,7 +177,7 @@ fn main() -> eyre::Result<()> {
         .ignore_bed
         .as_ref()
         .map(|bed| {
-            let itvs = read_bed(&bed).unwrap_or_default();
+            let itvs = read_bed(bed).unwrap_or_default();
             itvs.into_iter()
                 .map(|(chrom, itvs)| (chrom, Lapper::new(itvs)))
                 .collect()
@@ -255,7 +272,7 @@ fn main() -> eyre::Result<()> {
             }
         }
     }
-    // Must have more than one event per read 
+    // Must have more than one event per read
     // Must have at least one primary alignment
     read_events.retain(|_, v| v.len() > 1 && v.iter().any(|e| !e.is_secondary));
 

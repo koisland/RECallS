@@ -1,8 +1,4 @@
-use std::ops::Bound;
-
-use eyre::bail;
-
-use noodles::{core::Region, sam::alignment::record::cigar::op::Kind};
+use noodles::sam::alignment::record::cigar::op::Kind;
 
 /// Convert cigar string to operations.
 /// * Adapted from <https://github.com/pysam-developers/pysam/blob/3e3c8b0b5ac066d692e5c720a85d293efc825200/pysam/libcalignedsegment.pyx#L2009>
@@ -41,14 +37,4 @@ pub fn get_aligned_pairs(
         }
     }
     Ok(pairs)
-}
-
-pub fn get_coords_from_region(region: &Region) -> eyre::Result<(usize, usize)> {
-    let (Bound::Included(st), Bound::Included(end)) = (
-        region.start().map(|b| b.get()),
-        region.end().map(|b| b.get()),
-    ) else {
-        bail!("Invalid st or end")
-    };
-    Ok((st, end))
 }

@@ -1,5 +1,6 @@
 import os
 import sys
+import ast
 import math
 import pysam
 import random
@@ -71,7 +72,7 @@ def run_mm2_dotplot(fa: str) -> pl.DataFrame:
             tfh.name,
             has_header=False,
             separator="\t",
-            new_columns=get_type_hints(PAF).keys(),
+            new_columns=list(get_type_hints(PAF).keys()),
         )
 
 
@@ -119,14 +120,14 @@ def draw_dotplot(ax: Axes, df_paf: pl.DataFrame, min_aln_len: int = 0):
     # filter by alignment length
     df_paf = df_paf.filter(pl.col("aln_len").ge(min_aln_len))
 
-    first_paf_row: PAF = df_paf.row(0, named=True)
+    first_paf_row: PAF = df_paf.row(0, named=True)  # pyright: ignore
     tlen = first_paf_row["tlen"]
 
     end, _ = rotate((tlen, tlen))
 
     polygons = []
     row: PAF
-    for row in df_paf.iter_rows(named=True):
+    for row in df_paf.iter_rows(named=True):  # pyright: ignore
         tst, tend = row["tst"], row["tend"]
         qst, qend = row["qst"], row["qend"]
         strand = row["strand"]
@@ -201,6 +202,11 @@ def generate_event(
         f"{typ}_{chrom}", sequence=final_seq, comment=f"{midpt_1}-{midpt_2}"
     )
 
+def parse_closed_itv(sitv: str) -> tuple[int, int]:
+    itv = ast.literal_eval(sitv)
+    assert isinstance(itv, list) and len(itv) == 2, f"Invalid itv provided: {sitv}"
+    return (itv[0], itv[1])
+
 
 def main():
     ap = argparse.ArgumentParser(description="Induce inversion based on dotplot.")
@@ -220,17 +226,17 @@ def main():
     )
     ap.add_argument(
         "-d",
-        "--max_dst_between",
-        type=int,
-        default=1_000_000,
-        help="Maximum distance between homologous intervals for inversion.",
+        "--dst_between",
+        type=parse_closed_itv,
+        default=(0, 10_000_000),
+        help="Range of distance between homologous intervals to use for event.",
     )
     ap.add_argument(
         "-l",
-        "--min_aln_len",
-        type=int,
-        default=50_000,
-        help="Minimum aligned block length to use for inversion.",
+        "--aln_len",
+        type=parse_closed_itv,
+        default=(50_000, 300_000_000),
+        help="Range of aligned block lengths to use for event.",
     )
     ap.add_argument(
         "-pl",
@@ -254,9 +260,9 @@ def main():
     args = ap.parse_args()
 
     output_prefix = args.output_prefix
-    min_aln_len = args.min_aln_len
+    aln_len = args.aln_len
     plot_min_aln_len = args.plot_min_aln_len
-    max_dst_between = args.max_dst_between
+    dst_between = args.dst_between
     event: Event = args.event
     ignore_bed = args.ignore
 
@@ -289,11 +295,11 @@ def main():
             .then(pl.col("tst") - pl.col("qend"))
             .otherwise(pl.col("qst") - pl.col("tend"))
         )
-        .filter(pl.col("aln_len").ge(min_aln_len) & pl.col("dst").le(max_dst_between))
+        .filter(pl.col("aln_len").is_between(*aln_len) & pl.col("dst").is_between(*dst_between))
     )
     if df_subset_initial_paf.is_empty():
         raise RuntimeError(
-            f"No valid self-alignments with {min_aln_len=} and fasta file, {fasta.filename}."
+            f"No valid self-alignments within {aln_len=} and fasta file, {fasta.filename}."
         )
 
     # TODO: Allow multiple and check no overlap.
@@ -312,8 +318,8 @@ def main():
 
         valid_paf_rows = []
         row: PAF
-        print(f"Initial valid alignments: {df_subset_initial_paf.shape[0]}")
-        for row in df_subset_initial_paf.iter_rows(named=True):
+        print(f"Initial valid alignments: {df_subset_initial_paf.shape[0]}", file=sys.stderr)
+        for row in df_subset_initial_paf.iter_rows(named=True):  # pyright: ignore
             chrom = row["qname"]
             qst = row["qst"]
             qend = row["qend"]
@@ -326,15 +332,15 @@ def main():
             valid_paf_rows.append(row)
 
         df_subset_initial_paf = pl.DataFrame(valid_paf_rows, orient="row")
-        print(f"Post BED filtering valid alignments: {df_subset_initial_paf.shape[0]}")
+        print(f"Post BED filtering valid alignments: {df_subset_initial_paf.shape[0]}", file=sys.stderr)
 
     rand_row = random.randint(0, df_subset_initial_paf.shape[0] - 1)
-    row_initial_paf: PAF = df_subset_initial_paf.row(rand_row, named=True)
+    row_initial_paf: PAF = df_subset_initial_paf.row(rand_row, named=True) # pyright: ignore
 
     new_seq_fa = generate_event(fasta, chrom, row_initial_paf, typ=event)
 
     # Draw inverted segment on plot
-    midpt_1, midpt_2 = [int(pos) for pos in new_seq_fa.comment.split("-")]
+    midpt_1, midpt_2 = [int(pos) for pos in new_seq_fa.comment.split("-")]  # pyright: ignore
 
     # Write bed region
     out_bed_file = f"{output_prefix}_event.bed"

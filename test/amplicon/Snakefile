@@ -5,9 +5,14 @@ OUTDIR = "test/amplicon"
 LOGDIR = "test/amplicon/logs"
 
 REF = join(OUTDIR, f"{FNAME_PREFIX}.fa.gz")
-SEEDS = [42, 120]
-EVENTS = ["inversion", "deletion"]
-
+# TODO: Scale up
+SEEDS = [42, 120, 430000032]
+EVENTS = ["inversion", "deletion", "deletion"]
+OPTS = ["", "", "-d '[1_000_000, 10_000_000]'"]
+OPTS = {
+    (seed, event): opts
+    for seed, event, opts in zip(SEEDS, EVENTS, OPTS, strict=True)
+}
 
 rule get_lcr_regions:
     input:
@@ -33,6 +38,7 @@ rule simulate_nahr_event:
         seed="{seed}",
         event="{event}",
         min_plot_length=50_000,
+        opts=lambda wc: OPTS[(int(wc.seed), wc.event)],
         output_prefix=lambda wc, output: output.fa.replace("_after_event.fa", ""),
         script="test/amplicon/denovo_inv_create.py"
     log:
@@ -45,7 +51,7 @@ rule simulate_nahr_event:
         -pl {params.min_plot_length} \
         -n <(awk '$3-$2>500' {input.lcr_bed}) \
         -e {params.event} \
-        -o {params.output_prefix} 2> {log}
+        -o {params.output_prefix} {params.opts} 2> {log}
         """
 
 rule simulate_nahr_event_reads:

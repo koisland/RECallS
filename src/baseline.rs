@@ -35,17 +35,17 @@ impl SummaryStats {
         let var = data
             .iter()
             .map(|value| {
-                let diff = mean - (*value as f64);
+                let diff = mean - *value;
                 diff * diff
             })
             .sum::<f64>()
             / n;
-        return Self {
+        Self {
             mean,
             var,
             stdev: var.sqrt(),
             n: data.len(),
-        };
+        }
     }
 
     pub fn zscore(&self, x: f64) -> f64 {

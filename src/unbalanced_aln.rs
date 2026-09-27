@@ -18,6 +18,7 @@ pub struct UnbalancedSummary {
 /// * mismatch_pos: all mismatch positions on read
 /// * read_len: read length
 /// * min_n_events: minimum number of events to consider alignment
+/// * thr_unbalanced: absolute difference between left and right side integral. Between 0.0-1.0
 ///
 /// # Returns
 /// * If is an unbalanced alignment
@@ -25,6 +26,7 @@ pub fn is_unbalanced_alignment(
     marker_qpos: &[f64],
     read_len: f64,
     min_n_events: usize,
+    thr_unbalanced: f64,
 ) -> eyre::Result<Option<UnbalancedSummary>> {
     if marker_qpos.is_empty() || marker_qpos.len() < min_n_events {
         return Ok(None);
@@ -50,18 +52,14 @@ pub fn is_unbalanced_alignment(
             gauss_kronrod_rule(|x| kde.pdf(&[x])[0], right_lower, right_upper, 7)
                 .map_err(|err| eyre::Report::msg(err))?;
 
-        // if integral_left.is_nan() || integral_right.is_nan() {
-        //     eprintln!("{marker_qpos:?}")
-        // }
-
         let abs_diff_area = (integral_left - integral_right).abs();
         Ok(Some(UnbalancedSummary {
-            is_unbalanced: abs_diff_area > 0.4,
+            is_unbalanced: abs_diff_area > thr_unbalanced,
             integral_left,
             integral_right,
         }))
     } else {
-        return Ok(None);
+        Ok(None)
     }
 }
 
@@ -83,10 +81,17 @@ mod test {
         },
     };
 
-    use crate::{
-        unbalanced_aln::is_unbalanced_alignment,
-        utils::{get_aligned_pairs, get_coords_from_region},
-    };
+    use crate::{unbalanced_aln::is_unbalanced_alignment, utils::get_aligned_pairs};
+
+    pub fn get_coords_from_region(region: &Region) -> eyre::Result<(usize, usize)> {
+        let (std::ops::Bound::Included(st), std::ops::Bound::Included(end)) = (
+            region.start().map(|b| b.get()),
+            region.end().map(|b| b.get()),
+        ) else {
+            eyre::bail!("Invalid st or end")
+        };
+        Ok((st, end))
+    }
 
     fn get_mismatch_pos(
         fh: &mut IndexedReader<bgzf::io::Reader<File>>,
@@ -152,10 +157,10 @@ mod test {
             .map(|(rname, (mismatch_pos, read_len))| {
                 (
                     rname,
-                    is_unbalanced_alignment(&mismatch_pos, read_len, 5)
+                    is_unbalanced_alignment(&mismatch_pos, read_len, 5, 0.5)
                         .unwrap()
-                        .unwrap()
-                        .is_unbalanced,
+                        .map(|s| s.is_unbalanced)
+                        .unwrap_or_default(),
                 )
             })
             .sorted_by(|a, b| a.0.cmp(&b.0))
