@@ -1,24 +1,21 @@
-use std::{
-    collections::HashMap,
-    path::Path,
-    // fs::File, io::BufWriter
-};
+use std::{collections::HashMap, path::Path, process::exit};
 
 use clap::Parser;
-use eyre::ContextCompat;
+use eyre::{ContextCompat, bail};
+use itertools::Itertools;
 use noodles::{
     bam::{self},
     core::{Position, Region},
-    sam::alignment::{
-        Record,
-        // RecordBuf,
-        // io::Write,
-        record::{
-            Flags,
-            cigar::op::Kind,
-            // data::field::Tag
+    sam::{
+        alignment::{
+            Record,
+            record::{
+                Cigar, Flags,
+                cigar::{Op, op::Kind},
+                data::field::Value,
+            },
         },
-        // record_buf::data::field::Value,
+        io::reader::record_buf::cigar::op,
     },
 };
 use rust_lapper::{Interval, Lapper};
@@ -38,7 +35,7 @@ mod io;
 mod unbalanced_aln;
 mod utils;
 
-struct Event {
+pub struct InversionEvent {
     chrom: String,
     start: usize,
     stop: usize,
@@ -48,8 +45,8 @@ struct Event {
     is_secondary: bool,
     unbalanced_summary: Option<UnbalancedSummary>,
 }
-impl Event {
-    fn as_bed(&self) -> String {
+impl InversionEvent {
+    pub fn as_bed(&self) -> String {
         format!(
             "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:?}",
             self.chrom,
@@ -61,6 +58,42 @@ impl Event {
             self.is_secondary,
             self.unbalanced_summary
         )
+    }
+}
+
+pub struct DeletionEvent {}
+
+pub enum Event {
+    Deletion(DeletionEvent),
+    Inversion(InversionEvent),
+}
+
+pub enum ClipDirection {
+    Left,
+    Right,
+    Both,
+}
+
+type SARecord<'a> = (&'a str, &'a str, &'a str, &'a str, &'a str, &'a str);
+
+fn get_clip_direction(cg: impl Iterator<Item = Op>) -> Option<ClipDirection> {
+    let mut left_op = None;
+    let mut right_op = None;
+    for (i, op) in cg
+        .enumerate()
+        .filter(|(_, op)| matches!(op.kind(), Kind::SoftClip | Kind::HardClip))
+    {
+        if i == 0 {
+            left_op = Some(op)
+        } else {
+            right_op = Some(op)
+        }
+    }
+    match (left_op, right_op) {
+        (None, None) => None,
+        (None, Some(_)) => Some(ClipDirection::Right),
+        (Some(_), None) => Some(ClipDirection::Left),
+        (Some(_), Some(_)) => Some(ClipDirection::Both),
     }
 }
 
@@ -84,28 +117,20 @@ fn detect_events(
     let itree_ignore = ignore_bed.get(chrom).unwrap_or(&null_itree_ignore);
     let query = fh.query(&header, &region)?;
 
-    // let outfile_name = format!("{chrom}:{st}-{end}.bam");
-    // let outfile = BufWriter::new(File::create_new(&outfile_name)?);
-    // let mut out_bam = bam::io::Writer::new(outfile);
-    // out_bam.write_header(&header)?;
-
     let indel_read_stats = [&read_stats.primary, &read_stats.secondary];
     let mut events = vec![];
 
     for rec in query.records().flatten() {
         let rname = rec.name().unwrap();
-        let cg: bam::record::Cigar<'_> = rec.cigar();
+        let cg = rec.cigar();
         let aln_pairs = get_aligned_pairs(
             cg.iter().flatten().map(|op| (op.kind(), op.len())),
             rec.alignment_start().unwrap()?.get(),
         )?;
         let qscores = rec.quality_scores().as_bytes();
-        // let is_suppl = rec.flags().contains(Flags::SUPPLEMENTARY);
+        let is_suppl = rec.flags().contains(Flags::SUPPLEMENTARY);
         let is_sec = rec.flags().contains(Flags::SECONDARY);
         let typ_read_stats = &indel_read_stats[is_sec as usize];
-        // if is_suppl {
-        //     eprintln!("{:?}\n{:?}", rec.flags(), rec.data())
-        // }
         let aln_len = noodles::sam::alignment::Record::alignment_span(&rec).unwrap()? as f64;
 
         // Look for:
@@ -141,7 +166,7 @@ fn detect_events(
                 rec.alignment_start().unwrap().map(|p| p.get())?,
                 rec.alignment_end().unwrap().map(|p| p.get())?,
             );
-            let event = Event {
+            let event = InversionEvent {
                 chrom: chrom.to_owned(),
                 start: rst,
                 stop: rend,
@@ -151,19 +176,73 @@ fn detect_events(
                 is_secondary: is_sec,
                 unbalanced_summary: is_unbalanced,
             };
-            events.push(event);
+            events.push(Event::Inversion(event));
         }
-        // if is_unbalanced {
-        //     let mut record_buf = RecordBuf::try_from_alignment_record(&header, &rec)?;
-        //     let data = record_buf.data_mut();
-        //     data.insert(Tag::new(b'U', b'B'), Value::from(1));
-        //     out_bam.write_alignment_record(&header, &record_buf)?;
-        // } else {
-        //     out_bam.write_record(&header, &rec)?;
-        // }
+        if is_suppl {
+            let (rec_st, rec_end) = (
+                rec.alignment_start().unwrap().map(|p| p.get())?,
+                rec.alignment_end().unwrap().map(|p| p.get())?,
+            );
+            let Value::String(sa_tag) = rec
+                .data()
+                .get(&[b'S', b'A'])
+                .with_context(|| format!("Must have SA tag for {rname}."))??
+            else {
+                bail!("Invalid type for SA tag for {rname}.")
+            };
+            let clip_direction = get_clip_direction(cg.iter().flatten()).with_context(|| {
+                format!("Read {rname} must have soft/hardclipped operation in cigar: {cg:?}")
+            })?;
+
+            // minimap2 v2.28 SA tag format
+            //
+            // chrom,start,strand,cigar,mapq,num_mismatches_gaps
+            // chr7,2441699,-,12760S18196M69I,60,120
+            for (sa_chrom, sa_start, sa_strand, sa_cigar, sa_mapq, sa_nm) in str::from_utf8(sa_tag)?
+                .split(';')
+                .flat_map(|rec| rec.splitn(6, ',').collect_tuple::<SARecord>())
+                // Must be same chromosome
+                .filter(|sa_rec| sa_rec.0 == chrom)
+            {
+                let sa_start: usize = sa_start.parse()?;
+
+                // What is the order of the current alignment relative to the suppl alignment?
+                let sa_upstream = sa_start > rec_end;
+
+                let sa_cigar = noodles::sam::record::Cigar::new(sa_cigar.as_bytes());
+                let sa_clip_direction = get_clip_direction(sa_cigar.iter().flatten())
+                    .with_context(|| format!("Read {rname} must have soft/hardclipped operation in SA cigar: {sa_cigar:?}"))?;
+
+                match (sa_upstream, &clip_direction, sa_clip_direction) {
+                    // Invalid
+                    (_, ClipDirection::Left, ClipDirection::Left) |
+                    (_, ClipDirection::Right, ClipDirection::Right) |
+                    (_, ClipDirection::Both, _) |
+                    (_, _, ClipDirection::Both) |
+                    //       *
+                    // |<  | |  >|
+                    (true, ClipDirection::Left, ClipDirection::Right) |
+                    // *     
+                    // |<  | |  >|
+                    (false, ClipDirection::Right, ClipDirection::Left) => {
+                        continue;
+                    },
+                    //       *
+                    // |  >| |<  |
+                    (true, ClipDirection::Right, ClipDirection::Left) => {
+                        eprintln!("{sa_tag}")
+                    },
+                    // *     
+                    // |  >| |<  |
+                    (false, ClipDirection::Left, ClipDirection::Right) => {
+                        eprintln!("{sa_tag}")
+                    }
+                }
+            }
+            // exit(1)
+        }
     }
 
-    // bam::fs::index(outfile_name)?;
     Ok(events)
 }
 
@@ -259,24 +338,30 @@ fn main() -> eyre::Result<()> {
         ignore_bed.len()
     );
 
-    let mut read_events: HashMap<String, Vec<Event>> = HashMap::new();
+    let mut read_inv_events: HashMap<String, Vec<InversionEvent>> = HashMap::new();
     for region in regions.values().flatten() {
         let read_stats = &chrom_read_stats[&region.val];
         eprintln!("On {region:?}...");
         let events = detect_events(bam, fa, region, read_stats, &ignore_bed)?;
         for event in events {
-            if let Some(read_events) = read_events.get_mut(&event.rname) {
-                read_events.push(event);
-            } else {
-                read_events.insert(event.rname.to_owned(), vec![event]);
+            match event {
+                Event::Deletion(deletion_event) => todo!(),
+                Event::Inversion(inversion_event) => {
+                    if let Some(read_events) = read_inv_events.get_mut(&inversion_event.rname) {
+                        read_events.push(inversion_event);
+                    } else {
+                        read_inv_events
+                            .insert(inversion_event.rname.to_owned(), vec![inversion_event]);
+                    }
+                }
             }
         }
     }
     // Must have more than one event per read
     // Must have at least one primary alignment
-    read_events.retain(|_, v| v.len() > 1 && v.iter().any(|e| !e.is_secondary));
+    read_inv_events.retain(|_, v| v.len() > 1 && v.iter().any(|e| !e.is_secondary));
 
-    for (_, events) in read_events {
+    for (_, events) in read_inv_events {
         for event in events {
             println!("{}", event.as_bed())
         }
