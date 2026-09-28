@@ -13,11 +13,10 @@ import matplotlib.pyplot as plt
 
 from matplotlib.axes import Axes
 from collections import defaultdict
-from matplotlib.patches import Polygon
+from matplotlib.patches import FancyArrowPatch, Polygon
 from matplotlib.collections import PatchCollection
 from intervaltree.intervaltree import IntervalTree, Interval
 from typing import Sequence, Generator, TypedDict, Literal, get_type_hints
-
 
 nt_table = bytes.maketrans(b"ACTGactg", b"TGACtgac")
 
@@ -164,7 +163,6 @@ def calculate_midpt(st: int, end: int) -> int:
     midpt = round((end - st) / 2)
     return midpt + st
 
-
 def generate_event(
     fasta: pysam.FastaFile, chrom: str, row_initial_paf: PAF, typ: Event
 ) -> pysam.FastxRecord:
@@ -279,7 +277,7 @@ def main():
     else:
         df_initial_paf = pl.read_csv(paf_before, separator="\t")
 
-    fig, axes = plt.subplots(ncols=2, layout="constrained", figsize=(10, 3))
+    fig, axes = plt.subplots(nrows=2, layout="constrained", figsize=(5, 6))
     axes: Sequence[Axes]
     draw_dotplot(axes[0], df_initial_paf, min_aln_len=plot_min_aln_len)
 
@@ -371,27 +369,32 @@ def main():
             arr_st = (midpt_2, midpt_2)
             arr_end = (midpt_1, midpt_1)
             ax.set_title("Before")
-            ax.annotate(
-                "",
-                xy=rotate(arr_st),
-                xytext=rotate(arr_end),
-                arrowprops=dict(facecolor="orange", shrink=0.05),
-                label="Inversion",
-                zorder=3,
+            ax.add_patch(
+                FancyArrowPatch(
+                    rotate(arr_st),
+                    rotate(arr_end),
+                    facecolor="orange", mutation_scale=10, arrowstyle="simple",
+                    label="Affected",
+                    clip_on=False,
+                    zorder=5,
+                )
             )
+            ax.set_xlabel("")
         else:
             arr_st = (midpt_1, midpt_1)
             arr_end = (midpt_2, midpt_2)
             ax.set_title("After")
 
             if event == "inversion":
-                ax.annotate(
-                    "",
-                    xy=rotate(arr_st),
-                    xytext=rotate(arr_end),
-                    arrowprops=dict(facecolor="orange", shrink=0.05),
-                    label="Inversion",
-                    zorder=3,
+                ax.add_patch(
+                    FancyArrowPatch(
+                        rotate(arr_st),
+                        rotate(arr_end),
+                        facecolor="orange", mutation_scale=10, arrowstyle="simple",
+                        label="Affected",
+                        clip_on=False,
+                        zorder=5,
+                    )
                 )
             else:
                 ax.axvline(rotate(arr_st)[0], linestyle="dotted", color="black", label="Deletion")
@@ -404,8 +407,9 @@ def main():
     fig.legend(
         handles=uniq_labels_handles.values(),
         labels=uniq_labels_handles.keys(),
-        loc="center left",
-        bbox_to_anchor=(1, 0.5),
+        loc="upper center",
+        bbox_to_anchor=(0.5, -0.025),
+        ncol=len(uniq_labels_handles.keys()),
     )
     fig.savefig(f"{output_prefix}_event_dotplot.png", dpi=300, bbox_inches="tight")
 

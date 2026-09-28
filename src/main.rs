@@ -1,22 +1,14 @@
-use std::{collections::HashMap, path::Path, process::exit};
+use std::{collections::HashMap, path::Path};
 
 use clap::Parser;
 use eyre::{ContextCompat, bail};
 use itertools::Itertools;
 use noodles::{
-    bam::{self},
-    core::{Position, Region},
-    sam::{
-        alignment::{
-            Record,
-            record::{
-                Cigar, Flags,
-                cigar::{Op, op::Kind},
-                data::field::Value,
+    bam::{self}, core::{Position, Region}, sam::alignment::{
+            Record, record::{
+                Cigar, Flags, cigar::{Op, op::Kind}, data::field::Value,
             },
         },
-        io::reader::record_buf::cigar::op,
-    },
 };
 use rust_lapper::{Interval, Lapper};
 
@@ -25,7 +17,6 @@ use crate::{
     cli::Args,
     io::{aligned_intervals_windows, read_bed},
     unbalanced_aln::{UnbalancedSummary, is_unbalanced_alignment},
-    utils::get_aligned_pairs,
 };
 
 mod baseline;
@@ -120,13 +111,13 @@ fn detect_events(
     let indel_read_stats = [&read_stats.primary, &read_stats.secondary];
     let mut events = vec![];
 
+    let check_valid_itv = |ref_pos| {
+        ref_pos >= st && ref_pos <= end && itree_ignore.count(ref_pos, ref_pos) == 0
+    };
+
     for rec in query.records().flatten() {
         let rname = rec.name().unwrap();
         let cg = rec.cigar();
-        let aln_pairs = get_aligned_pairs(
-            cg.iter().flatten().map(|op| (op.kind(), op.len())),
-            rec.alignment_start().unwrap()?.get(),
-        )?;
         let qscores = rec.quality_scores().as_bytes();
         let is_suppl = rec.flags().contains(Flags::SUPPLEMENTARY);
         let is_sec = rec.flags().contains(Flags::SECONDARY);
@@ -138,34 +129,64 @@ fn detect_events(
         // * supplementary alignments on same chrom (for now)
         let mut marker_qpos = vec![];
         let mut n_indels: usize = 0;
-        for (qpos, _, kind) in aln_pairs.into_iter().filter(|(_, refpos, _)| {
-            *refpos >= st && *refpos <= end && itree_ignore.count(*refpos, *refpos) == 0
-        }) {
-            match kind {
-                Kind::Insertion | Kind::Deletion => {
-                    n_indels += 1;
+
+        let mut ref_pos: usize = rec.alignment_start().unwrap()?.get();
+        let mut qpos: usize = 0;
+        for (op, l) in cg.iter().flatten().map(|op| (op.kind(), op.len())) {
+            match op {
+                Kind::Match | Kind::SequenceMatch => {
+                    for _ in ref_pos..(ref_pos + l) {
+                        qpos += 1
+                    }
+                    ref_pos += l
                 }
                 Kind::SequenceMismatch => {
-                    // 0-93 ASCII+33 for pacbio
-                    let Some(qscore) = qscores.get(qpos) else {
-                        continue;
-                    };
-                    if *qscore > 30 {
-                        marker_qpos.push(qpos as f64);
+                    for _ in ref_pos..(ref_pos + l) {
+                        qpos += 1
                     }
+                    // Must have mismatch
+                    if check_valid_itv(ref_pos) {
+                        if qscores.get(qpos).cloned().unwrap_or_default() > 30 {
+                            marker_qpos.push(qpos as f64);
+                        }
+                    }
+                    ref_pos += l
                 }
-                _ => {}
-            };
+                Kind::Pad | Kind::SoftClip => {
+                    qpos += l;
+                }
+                Kind::Insertion => {
+                    if check_valid_itv(ref_pos) {
+                        for _ in ref_pos..(ref_pos + l) {
+                            n_indels += 1;
+                            marker_qpos.push(qpos as f64);
+                        }
+                    }
+                    qpos += l;
+                }
+                Kind::Deletion => {
+                    if check_valid_itv(ref_pos) {
+                        for _ in ref_pos..(ref_pos + l) {
+                            n_indels += 1;
+                            marker_qpos.push(qpos as f64);
+                        }
+                    }
+                    ref_pos += l
+                }
+                Kind::HardClip => {
+                    continue;
+                }
+                Kind::Skip => ref_pos += l,
+            }
         }
 
         let indel_rate_zscore = typ_read_stats.zscore(n_indels as f64 / aln_len);
         let is_unbalanced = is_unbalanced_alignment(&marker_qpos, aln_len, 5, 0.33)?;
-
+        let (rst, rend) = (
+            rec.alignment_start().unwrap().map(|p| p.get())?,
+            rec.alignment_end().unwrap().map(|p| p.get())?,
+        );
         if indel_rate_zscore > 3.4 && aln_len > 10_000.0 {
-            let (rst, rend) = (
-                rec.alignment_start().unwrap().map(|p| p.get())?,
-                rec.alignment_end().unwrap().map(|p| p.get())?,
-            );
             let event = InversionEvent {
                 chrom: chrom.to_owned(),
                 start: rst,
@@ -179,10 +200,6 @@ fn detect_events(
             events.push(Event::Inversion(event));
         }
         if is_suppl {
-            let (rec_st, rec_end) = (
-                rec.alignment_start().unwrap().map(|p| p.get())?,
-                rec.alignment_end().unwrap().map(|p| p.get())?,
-            );
             let Value::String(sa_tag) = rec
                 .data()
                 .get(&[b'S', b'A'])
@@ -207,9 +224,10 @@ fn detect_events(
                 let sa_start: usize = sa_start.parse()?;
 
                 // What is the order of the current alignment relative to the suppl alignment?
-                let sa_upstream = sa_start > rec_end;
+                let sa_upstream = sa_start > rend;
 
                 let sa_cigar = noodles::sam::record::Cigar::new(sa_cigar.as_bytes());
+                let sa_aln_len = sa_cigar.alignment_span()?;
                 let sa_clip_direction = get_clip_direction(sa_cigar.iter().flatten())
                     .with_context(|| format!("Read {rname} must have soft/hardclipped operation in SA cigar: {sa_cigar:?}"))?;
 
@@ -230,16 +248,15 @@ fn detect_events(
                     //       *
                     // |  >| |<  |
                     (true, ClipDirection::Right, ClipDirection::Left) => {
-                        eprintln!("{sa_tag}")
+                        // println!("{chrom}\t{rst}\t{rend}\t{sa_chrom}:{sa_start}-{}", sa_start+sa_aln_len)
                     },
                     // *     
                     // |  >| |<  |
                     (false, ClipDirection::Left, ClipDirection::Right) => {
-                        eprintln!("{sa_tag}")
+                        // println!("{chrom}\t{rst}\t{rend}\t{sa_chrom}:{sa_start}-{}", sa_start+sa_aln_len)
                     }
                 }
             }
-            // exit(1)
         }
     }
 

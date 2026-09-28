@@ -13,5 +13,10 @@ Crossover event
 samtools view -bh /uufs/chpc.utah.edu/common/home/u1643401/projects/sperm_ampl_sv/results/align/CT22.bam ENA_CBCUDK010000011_CBCUDK010000011.1:6,335,921-6,341,074 -o workflow/scripts/RECall/test/CT22_ENA_CBCUDK010000011_CBCUDK010000011.1_6335921-6341074.bam
 ```
 
-## Other
-TODO
+## Visualizing mismatch PDF 
+```bash
+python test/single_read_vis_mismatch_dist.py \
+-i test/amplicon/chm13_chr7_sim.bam \
+-r chr7:6031981-6085629 \
+-l 30580116-9da2-f84f-b0c8-46b140978a73 b919a3e8-c866-4793-60d4-c8d69792fe9f 
+```

@@ -1,4 +1,6 @@
+import os
 import pysam
+import argparse
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy import stats, integrate
@@ -28,30 +30,62 @@ CIGAR_OPS = {
 # X    BAM_CDIFF       8
 # B    BAM_CBACK       9
 # NM   NM tag          10
+EVENTS = {
+    "no_event": "m84108_241123_231350_s2/62194242",
+    "no_event_noisy": "m84108_241123_231350_s2/93456693",
+    "co_event": "m84108_241123_231350_s2/130221242",
+    "other_event": "m84108_241123_231350_s2/126487957",
+}
 
 def main():
-    pass
-    # https://stackoverflow.com/questions/49293019/calculating-probability-distribution-from-time-series-data-in-python
-    fh = pysam.AlignmentFile("/home/koisland/Projects/RECallS/test/single_read/CT22_ENA_CBCUDK010000011_CBCUDK010000011.1_6335921-6341074.bam")
-
-    events = {
-        "no_event": "m84108_241123_231350_s2/62194242",
-        "no_event_noisy": "m84108_241123_231350_s2/93456693",
-        "co_event": "m84108_241123_231350_s2/130221242",
-        "other_event": "m84108_241123_231350_s2/126487957",
-    }
-    qry = fh.fetch(
-        "ENA_CBCUDK010000011_CBCUDK010000011.1",
-        6317808,
-        6359969,
+    ap = argparse.ArgumentParser()
+    ap.add_argument(
+        "-i",
+        "--infile",
+        type=str,
+        default="/home/koisland/Projects/RECallS/test/single_read/CT22_ENA_CBCUDK010000011_CBCUDK010000011.1_6335921-6341074.bam"
     )
+    ap.add_argument(
+        "-r",
+        "--region",
+        type=str,
+        default="ENA_CBCUDK010000011_CBCUDK010000011.1:6317808-6359969"
+    )
+    ap.add_argument(
+        "-l",
+        "--list_reads",
+        nargs="*",
+        type=str,
+        default=set(EVENTS.values())
+    )
+    ap.add_argument(
+        "-o",
+        "--output_dir",
+        type=str,
+        default="."
+    )
+    args = ap.parse_args()
+    infile = args.infile
+    region = args.region
+    list_reads = args.list_reads
+    output_dir = args.output_dir
+    os.makedirs(output_dir, exist_ok=True)
+
+    chrom, coords = region.split(":")
+    st, end = coords.split("-")
+    st, end = int(st), int(end)
+    
+    # https://stackoverflow.com/questions/49293019/calculating-probability-distribution-from-time-series-data-in-python
+    fh = pysam.AlignmentFile(infile)
+    qry = fh.fetch(chrom, st, end)
+
     window = 1000
     for read in qry:
         read_name = read.query_name
         if not read_name:
             continue
 
-        if read_name not in events.values():
+        if read_name not in list_reads:
             continue
         # Take only aligned length
         read_aln_len = read.query_alignment_length
@@ -59,12 +93,18 @@ def main():
         qscores = read.query_alignment_qualities
         if not qscores:
             continue
-        for qpos, _, op in read.get_aligned_pairs(with_cigar=True):
+        prev_qpos = st
+        for i, (qpos, rpos, op) in enumerate(read.get_aligned_pairs(with_cigar=True)):
             op = CIGAR_OPS[op]
             if op == "X":
                 qscore = qscores[qpos] if qpos else 0
                 if qscore > 30:
                     mismatch_pos.append(qpos)
+            elif op == "I" or op == "D":
+                mismatch_pos.append(qpos if qpos else prev_qpos)
+
+            if qpos:
+                prev_qpos = qpos
         
         x = np.linspace(0, read_aln_len, window)
         midpt = read_aln_len / 2
@@ -92,13 +132,14 @@ def main():
         else:
             status = None
 
+        plt.title(read_name)
         plt.fill_between(
             x_integral_left,
             0,
             kde(x_integral_left),
             alpha=0.3,
             color='b',
-            label="Area: {:.3f}".format(integral_left)
+            label="Left area: {:.3f}".format(integral_left)
         )
         plt.fill_between(
             x_integral_right,
@@ -106,10 +147,14 @@ def main():
             kde(x_integral_right),
             alpha=0.3,
             color='r',
-            label="Area: {:.3f}".format(integral_right)
+            label="Right area: {:.3f}".format(integral_right)
         )
+        plt.xlabel("Read position (bp)")
+        plt.ylabel("PDF value")
+        plt.ylim(bottom=0)
         plt.legend()
-        plt.savefig(f"{read_name.replace("/", "_")}_{status}.png")
+        out_img = os.path.join(output_dir, f"{read_name.replace("/", "_")}_{status}.png")
+        plt.savefig(out_img, dpi=300, bbox_inches="tight")
         plt.clf()
 
 
