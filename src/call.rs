@@ -18,7 +18,7 @@ use rust_lapper::{Interval, Lapper};
 
 use crate::{
     baseline::ReadIndelSummaryStats,
-    dotplot::Paf,
+    self_align::Paf,
     events::{DeletionEvent, Event, InversionEvent},
     unbalanced_aln::is_unbalanced_alignment,
 };

@@ -9,7 +9,7 @@ use crate::{
     baseline::aggregate_stats_indel_rate,
     call::detect_events,
     cli::Args,
-    dotplot::generate_whole_contig_dotplot,
+    self_align::generate_contig_self_alignment,
     events::{Event, InversionEvent},
     io::{
         FastaHandle, aligned_intervals_windows, read_bed, read_indel_read_stats, read_paf,
@@ -20,7 +20,7 @@ use crate::{
 mod baseline;
 mod call;
 mod cli;
-mod dotplot;
+mod self_align;
 mod events;
 mod io;
 mod unbalanced_aln;
@@ -80,7 +80,7 @@ fn main() -> eyre::Result<()> {
     let paf_self_align = output_dir.join("chrom_self_align.paf");
     let itvs_self_similar = if !paf_self_align.exists() {
         let itvs_self_similar =
-            generate_whole_contig_dotplot(&mut fh, &seq_lens, args.del_max_rgn_dv)?;
+            generate_contig_self_alignment(&mut fh, &seq_lens, args.del_max_rgn_dv)?;
         write_itvs_self_similar_paf(&itvs_self_similar, &paf_self_align)?;
         itvs_self_similar
     } else {

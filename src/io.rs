@@ -19,7 +19,7 @@ use rust_lapper::{Interval, Lapper};
 
 use crate::{
     baseline::{IndelSummaryStats, ReadIndelSummaryStats},
-    dotplot::{Paf, Strand},
+    self_align::{Paf, Strand},
 };
 
 pub fn read_bed(bed: &Path) -> Option<HashMap<String, Vec<Interval<usize, String>>>> {

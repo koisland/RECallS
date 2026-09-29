@@ -51,7 +51,7 @@ pub struct Paf {
     pub dv: OrderedFloat<f32>,
 }
 
-pub fn generate_whole_contig_dotplot(
+pub fn generate_contig_self_alignment(
     fh: &mut FastaHandle,
     seq_lens: &HashMap<String, usize>,
     max_dv: f32,
