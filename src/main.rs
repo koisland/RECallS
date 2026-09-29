@@ -20,7 +20,7 @@ use rust_lapper::{Interval, Lapper};
 use crate::{
     baseline::{ReadIndelSummaryStats, aggregate_stats_indel_rate},
     cli::Args,
-    dotplot::generate_whole_contig_dotplot,
+    dotplot::{Paf, generate_whole_contig_dotplot},
     io::{
         FastaHandle, aligned_intervals_windows, read_bed, read_indel_read_stats, read_paf,
         write_indel_read_stats, write_itvs_self_similar_paf,
@@ -186,10 +186,10 @@ fn collect_read_markers(
 
 fn detect_events(
     bam: &Path,
-    _fa: &Path,
     itv: &Interval<usize, String>,
     read_stats: &ReadIndelSummaryStats,
-    ignore_bed: &HashMap<String, Lapper<usize, String>>,
+    itree_ignore: &Lapper<usize, String>,
+    itree_self_similar: &Lapper<usize, Paf>,
 ) -> eyre::Result<Vec<Event>> {
     let mut fh = bam::io::indexed_reader::Builder::default().build_from_path(bam)?;
     let header = fh.read_header()?;
@@ -200,8 +200,6 @@ fn detect_events(
         Position::new(itv.start.clamp(1, usize::MAX)).unwrap()..=Position::new(itv.stop).unwrap(),
     );
     // Get intervaltree of ignored regions
-    let null_itree_ignore = Lapper::new(vec![]);
-    let itree_ignore = ignore_bed.get(chrom).unwrap_or(&null_itree_ignore);
     let query = fh.query(&header, &region)?;
 
     let indel_read_stats = [&read_stats.primary, &read_stats.secondary];
@@ -255,7 +253,7 @@ fn detect_events(
             //
             // chrom,start,strand,cigar,mapq,num_mismatches_gaps
             // chr7,2441699,-,12760S18196M69I,60,120
-            for (sa_chrom, sa_start, sa_strand, sa_cigar, sa_mapq, sa_nm) in str::from_utf8(sa_tag)?
+            for (sa_chrom, sa_start, _sa_strand, sa_cigar, _sa_mapq, _sa_nm) in str::from_utf8(sa_tag)?
                 .split(';')
                 .flat_map(|rec| rec.splitn(6, ',').collect_tuple::<SARecord>())
                 // Must be same chromosome
@@ -288,14 +286,23 @@ fn detect_events(
                     //       *
                     // |  >| |<  |
                     (true, ClipDirection::Right, ClipDirection::Left) => {
-                        // println!("{chrom}\t{rst}\t{rend}\t{sa_chrom}:{sa_start}-{}", sa_start+sa_aln_len)
+                        let n_similar = itree_self_similar.count(sa_start, sa_start+sa_aln_len);
+                        if n_similar != 0 {
+                            println!("{chrom}\t{rst}\t{rend}\t{sa_chrom}:{sa_start}-{}", sa_start+sa_aln_len);
+
+                        }
                     },
                     // *     
                     // |  >| |<  |
                     (false, ClipDirection::Left, ClipDirection::Right) => {
-                        // println!("{chrom}\t{rst}\t{rend}\t{sa_chrom}:{sa_start}-{}", sa_start+sa_aln_len)
+                        let n_similar = itree_self_similar.count(sa_start, sa_start+sa_aln_len);
+                        if n_similar != 0 {
+                            println!("{chrom}\t{rst}\t{rend}\t{sa_chrom}:{sa_start}-{}", sa_start+sa_aln_len);
+
+                        }
                     }
                 }
+                // std::process::exit(1)
             }
         }
     }
@@ -321,6 +328,7 @@ fn main() -> eyre::Result<()> {
                 .collect()
         })
         .unwrap_or_default();
+    let null_itree_ignore = Lapper::new(vec![]);
 
     if args.ignore_bed.is_some() {
         eprintln!(
@@ -356,12 +364,13 @@ fn main() -> eyre::Result<()> {
 
     let paf_self_align = output_dir.join("chrom_self_align.paf");
     let itvs_self_similar = if !paf_self_align.exists() {
-        let itvs_self_similar = generate_whole_contig_dotplot(&mut fh, &seq_lens)?;
+        let itvs_self_similar = generate_whole_contig_dotplot(&mut fh, &seq_lens, 0.05)?;
         write_itvs_self_similar_paf(&itvs_self_similar, &paf_self_align)?;
         itvs_self_similar
     } else {
-        read_paf(&paf_self_align)?
+        read_paf(&paf_self_align, 0.05)?
     };
+    let null_itree_self_similar = Lapper::new(vec![]);
 
     eprintln!(
         "Computing indel rates across {} chromosome(s).",
@@ -385,11 +394,22 @@ fn main() -> eyre::Result<()> {
     let mut read_inv_events: HashMap<String, Vec<InversionEvent>> = HashMap::new();
     for region in regions.values().flatten() {
         let read_stats = &chrom_read_stats[&region.val];
+        let itree_ignore_chrom = ignore_bed.get(&region.val).unwrap_or(&null_itree_ignore);
+        let itree_self_similar_chrom = &itvs_self_similar
+            .get(&region.val)
+            .unwrap_or(&null_itree_self_similar);
+
         eprintln!("On {region:?}...");
-        let events = detect_events(bam, fa, region, read_stats, &ignore_bed)?;
+        let events = detect_events(
+            bam,
+            region,
+            read_stats,
+            itree_ignore_chrom,
+            itree_self_similar_chrom,
+        )?;
         for event in events {
             match event {
-                Event::Deletion(deletion_event) => todo!(),
+                Event::Deletion(_deletion_event) => todo!(),
                 Event::Inversion(inversion_event) => {
                     if let Some(read_events) = read_inv_events.get_mut(&inversion_event.rname) {
                         read_events.push(inversion_event);
@@ -407,7 +427,7 @@ fn main() -> eyre::Result<()> {
 
     for (_, events) in read_inv_events {
         for event in events {
-            println!("{}", event.as_bed())
+            // println!("{}", event.as_bed())
         }
     }
 

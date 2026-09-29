@@ -14,6 +14,7 @@ use noodles::{
     core::{Position, Region},
     fasta,
 };
+use ordered_float::OrderedFloat;
 use rust_lapper::{Interval, Lapper};
 
 use crate::{
@@ -58,7 +59,7 @@ pub fn read_bed(bed: &Path) -> Option<HashMap<String, Vec<Interval<usize, String
     Some(intervals)
 }
 
-pub fn read_paf(paf: &Path) -> eyre::Result<HashMap<String, Lapper<usize, Paf>>> {
+pub fn read_paf(paf: &Path, max_dv: f32) -> eyre::Result<HashMap<String, Lapper<usize, Paf>>> {
     let fh_paf_self_align = BufReader::new(File::open(paf)?);
     let mut pafs: HashMap<String, Vec<Interval<usize, Paf>>> = HashMap::new();
     for line in fh_paf_self_align.lines() {
@@ -76,19 +77,23 @@ pub fn read_paf(paf: &Path) -> eyre::Result<HashMap<String, Lapper<usize, Paf>>>
                 tend,
                 matches,
                 aln_len,
-                mapq,
+                dv,
             ],
         ) = line.split('\t').collect_array()
         {
-            let qlen: usize = qlen.parse().unwrap();
-            let qst: usize = qst.parse().unwrap();
-            let qend: usize = qend.parse().unwrap();
-            let tlen: usize = tlen.parse().unwrap();
-            let tst: usize = tst.parse().unwrap();
-            let tend: usize = tend.parse().unwrap();
-            let matches: usize = matches.parse().unwrap();
-            let aln_len: usize = aln_len.parse().unwrap();
-            let mapq: usize = mapq.parse().unwrap();
+            let qlen: usize = qlen.parse()?;
+            let qst: usize = qst.parse()?;
+            let qend: usize = qend.parse()?;
+            let tlen: usize = tlen.parse()?;
+            let tst: usize = tst.parse()?;
+            let tend: usize = tend.parse()?;
+            let matches: usize = matches.parse()?;
+            let aln_len: usize = aln_len.parse()?;
+            let dv = OrderedFloat(dv.parse()?);
+            // Ignore highly divergent alignments
+            if *dv > max_dv {
+                continue;
+            }
             let itv = Interval {
                 start: qst,
                 stop: qend,
@@ -97,14 +102,14 @@ pub fn read_paf(paf: &Path) -> eyre::Result<HashMap<String, Lapper<usize, Paf>>>
                     qlen,
                     qst,
                     qend,
-                    strand: Strand::from_str(strand).unwrap(),
+                    strand: Strand::from_str(strand)?,
                     tchrom: tchrom.to_owned(),
                     tlen,
                     tst,
                     tend,
                     matches,
                     aln_len,
-                    mapq,
+                    dv,
                 },
             };
             if let Some(itvs) = pafs.get_mut(qchrom) {
@@ -144,7 +149,7 @@ pub fn write_itvs_self_similar_paf(
                 itv.val.tend,
                 itv.val.matches,
                 itv.val.aln_len,
-                itv.val.mapq,
+                itv.val.dv,
             )?;
         }
     }

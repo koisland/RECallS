@@ -37,18 +37,23 @@ pub fn is_unbalanced_alignment(
         // Calculate PDF of read mismatch positions
         // https://aakinshin.net/posts/kde-bw/
         // Silverman bandwith results in NaNs
-        let kde = KernelDensityEstimator::new(
-            marker_qpos,
-            |data: &[f64]| Scott.bandwidth(data),
-            Normal,
-        );
+        let kde =
+            KernelDensityEstimator::new(marker_qpos, |data: &[f64]| Scott.bandwidth(data), Normal);
         // Find area under curve of left and right side
         let y = kde.pdf(marker_qpos);
         let total = y.iter().sum::<f64>();
         let (Ok(idx) | Err(idx)) = marker_qpos.binary_search_by(|a| a.total_cmp(&midpt));
 
-        let integral_left = y.get(0..idx+1).map(|sl| sl.iter().sum::<f64>()).unwrap_or_default() / total;
-        let integral_right = y.get(idx+1..).map(|sl| sl.iter().sum::<f64>()).unwrap_or_default() / total;
+        let integral_left = y
+            .get(0..idx + 1)
+            .map(|sl| sl.iter().sum::<f64>())
+            .unwrap_or_default()
+            / total;
+        let integral_right = y
+            .get(idx + 1..)
+            .map(|sl| sl.iter().sum::<f64>())
+            .unwrap_or_default()
+            / total;
         let abs_diff_area = (integral_left - integral_right).abs();
         Ok(Some(UnbalancedSummary {
             is_unbalanced: abs_diff_area > thr_unbalanced,

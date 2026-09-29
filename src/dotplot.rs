@@ -2,7 +2,8 @@ use std::{collections::HashMap, process::Command, str::FromStr};
 
 use eyre::bail;
 use itertools::Itertools;
-use noodles::fasta;
+use noodles::fasta::{self, Record, record::Definition};
+use ordered_float::OrderedFloat;
 use rust_lapper::{Interval, Lapper};
 
 use crate::io::FastaHandle;
@@ -47,12 +48,13 @@ pub struct Paf {
     pub tend: usize,
     pub matches: usize,
     pub aln_len: usize,
-    pub mapq: usize,
+    pub dv: OrderedFloat<f32>,
 }
 
 pub fn generate_whole_contig_dotplot(
     fh: &mut FastaHandle,
     seq_lens: &HashMap<String, usize>,
+    max_dv: f32,
 ) -> eyre::Result<HashMap<String, Lapper<usize, Paf>>> {
     Ok(seq_lens
         .iter()
@@ -60,6 +62,15 @@ pub fn generate_whole_contig_dotplot(
             let rec = fh
                 .fetch(name, 0, *ctg_len)
                 .expect("Failed to query sequence for minimap2");
+
+            // Remove coords in chrom name.
+            let name =
+                String::from_utf8(rec.name().to_vec()).expect("Invalid utf8 for sequence name.");
+            let Some((_, name)) = name.rsplitn(2, ':').collect_tuple() else {
+                panic!("Invalid chrom name: {name}")
+            };
+            let definition = Definition::new(name, None);
+            let rec = Record::new(definition, rec.sequence().clone());
 
             // Create named tempfile and write single sequence
             let tempfile = tempfile::NamedTempFile::new()
@@ -105,11 +116,11 @@ pub fn generate_whole_contig_dotplot(
                             tend,
                             matches,
                             aln_len,
-                            mapq,
+                            _mapq,
                             _tp,
                             _cm,
                             _s1,
-                            _dv,
+                            dv,
                             _rl,
                         ],
                     ) = row.split('\t').collect_array()
@@ -122,7 +133,15 @@ pub fn generate_whole_contig_dotplot(
                         let tend: usize = tend.parse().unwrap();
                         let matches: usize = matches.parse().unwrap();
                         let aln_len: usize = aln_len.parse().unwrap();
-                        let mapq: usize = mapq.parse().unwrap();
+                        let Some((_, _, dv)) = dv.splitn(3, ':').collect_tuple() else {
+                            eprintln!("Invalid dv {dv} tag for {row}");
+                            continue;
+                        };
+                        let dv = OrderedFloat(dv.parse::<f32>().expect("Invalid dv float"));
+                        // Ignore highly divergent alignments
+                        if *dv > max_dv {
+                            continue;
+                        }
                         let itv = Interval {
                             start: qst,
                             stop: qend,
@@ -138,7 +157,7 @@ pub fn generate_whole_contig_dotplot(
                                 tend,
                                 matches,
                                 aln_len,
-                                mapq,
+                                dv,
                             },
                         };
                         paf_itvs.push(itv);

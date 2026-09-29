@@ -350,13 +350,10 @@ def main():
     with open(new_seq_fa_file, "wt") as fh:
         fh.write(str(new_seq_fa) + "\n")
 
-    paf_after = f"{output_prefix}_before_event_dotplot.paf"
-    if not os.path.exists(paf_after):
-        print("Running minimap2 to generate event dotplot", file=sys.stderr)
-        df_event_paf = run_mm2_dotplot(new_seq_fa_file)
-        df_event_paf.write_csv(paf_after, separator="\t")
-    else:
-        df_event_paf = pl.read_csv(paf_after, separator="\t")
+    paf_after = f"{output_prefix}_after_event_dotplot.paf"
+    print("Running minimap2 to generate event dotplot", file=sys.stderr)
+    df_event_paf = run_mm2_dotplot(new_seq_fa_file)
+    df_event_paf.write_csv(paf_after, separator="\t")
 
     # Then plot finally
     draw_dotplot(axes[1], df_event_paf, min_aln_len=plot_min_aln_len)

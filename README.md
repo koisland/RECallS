@@ -4,7 +4,8 @@
 ## Usage
 Align reads to donor-specific assembly.
 ```bash
-minimap -ax map-hifi -I8g --eqx "${sample}.fa.gz" "${sample}.fq.gz" \
+minimap -ax lr:hq --eqx -Y  -I8g "${sample}.fa.gz" "${sample}.fq.gz" \
+    | samtools sort -u - \
     | samtools view -F 4 -bh -o "${sample}.bam"
 ```
 
