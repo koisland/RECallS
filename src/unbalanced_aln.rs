@@ -82,7 +82,7 @@ mod test {
     };
     use rust_lapper::Lapper;
 
-    use crate::{collect_read_markers, unbalanced_aln::is_unbalanced_alignment};
+    use crate::{call::collect_read_markers, unbalanced_aln::is_unbalanced_alignment};
 
     pub fn get_coords_from_region(region: &Region) -> eyre::Result<(usize, usize)> {
         let (std::ops::Bound::Included(st), std::ops::Bound::Included(end)) = (
