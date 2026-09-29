@@ -4,18 +4,27 @@ use clap::Parser;
 use eyre::{ContextCompat, bail};
 use itertools::Itertools;
 use noodles::{
-    bam::{self}, core::{Position, Region}, sam::alignment::{
-            Record, record::{
-                Cigar, Flags, cigar::{Op, op::Kind}, data::field::Value,
-            },
+    bam::{self},
+    core::{Position, Region},
+    sam::alignment::{
+        Record,
+        record::{
+            Cigar, Flags,
+            cigar::{Op, op::Kind},
+            data::field::Value,
         },
+    },
 };
 use rust_lapper::{Interval, Lapper};
 
 use crate::{
-    baseline::{ReadSummaryStats, calculate_stats_indel_rate},
+    baseline::{ReadIndelSummaryStats, aggregate_stats_indel_rate},
     cli::Args,
-    io::{aligned_intervals_windows, read_bed},
+    dotplot::generate_whole_contig_dotplot,
+    io::{
+        FastaHandle, aligned_intervals_windows, read_bed, read_indel_read_stats, read_paf,
+        write_indel_read_stats, write_itvs_self_similar_paf,
+    },
     unbalanced_aln::{UnbalancedSummary, is_unbalanced_alignment},
 };
 
@@ -92,7 +101,7 @@ fn detect_events(
     bam: &Path,
     _fa: &Path,
     itv: &Interval<usize, String>,
-    read_stats: &ReadSummaryStats,
+    read_stats: &ReadIndelSummaryStats,
     ignore_bed: &HashMap<String, Lapper<usize, String>>,
 ) -> eyre::Result<Vec<Event>> {
     let mut fh = bam::io::indexed_reader::Builder::default().build_from_path(bam)?;
@@ -111,9 +120,8 @@ fn detect_events(
     let indel_read_stats = [&read_stats.primary, &read_stats.secondary];
     let mut events = vec![];
 
-    let check_valid_itv = |ref_pos| {
-        ref_pos >= st && ref_pos <= end && itree_ignore.count(ref_pos, ref_pos) == 0
-    };
+    let check_valid_itv =
+        |ref_pos| ref_pos >= st && ref_pos <= end && itree_ignore.count(ref_pos, ref_pos) == 0;
 
     for rec in query.records().flatten() {
         let rname = rec.name().unwrap();
@@ -145,10 +153,10 @@ fn detect_events(
                         qpos += 1
                     }
                     // Must have mismatch
-                    if check_valid_itv(ref_pos) {
-                        if qscores.get(qpos).cloned().unwrap_or_default() > 30 {
-                            marker_qpos.push(qpos as f64);
-                        }
+                    if check_valid_itv(ref_pos)
+                        && qscores.get(qpos).cloned().unwrap_or_default() > 30
+                    {
+                        marker_qpos.push(qpos as f64);
                     }
                     ref_pos += l
                 }
@@ -202,7 +210,7 @@ fn detect_events(
         if is_suppl {
             let Value::String(sa_tag) = rec
                 .data()
-                .get(&[b'S', b'A'])
+                .get(b"SA")
                 .with_context(|| format!("Must have SA tag for {rname}."))??
             else {
                 bail!("Invalid type for SA tag for {rname}.")
@@ -268,6 +276,8 @@ fn main() -> eyre::Result<()> {
 
     let bam = &args.bam;
     let fa = &args.fa;
+    let output_dir = &args.output_dir;
+    std::fs::create_dir_all(output_dir)?;
 
     let ignore_bed: HashMap<String, Lapper<usize, String>> = args
         .ignore_bed
@@ -296,58 +306,43 @@ fn main() -> eyre::Result<()> {
     }?;
 
     eprintln!(
+        "Detecting homologous regions from self-alignment of {} chromosome(s).",
+        ignore_bed.len()
+    );
+    // Generate dotplot per contig
+    let mut fh = FastaHandle::new(fa)?;
+    let seq_lens: HashMap<String, usize> = fh
+        .fai
+        .as_ref()
+        .iter()
+        .map(|rec| {
+            let ctg_name = str::from_utf8(rec.name()).unwrap();
+            let ctg_len = rec.length() as usize;
+            (ctg_name.to_owned(), ctg_len)
+        })
+        .collect();
+
+    let paf_self_align = output_dir.join("chrom_self_align.paf");
+    let itvs_self_similar = if !paf_self_align.exists() {
+        let itvs_self_similar = generate_whole_contig_dotplot(&mut fh, &seq_lens)?;
+        write_itvs_self_similar_paf(&itvs_self_similar, &paf_self_align)?;
+        itvs_self_similar
+    } else {
+        read_paf(&paf_self_align)?
+    };
+
+    eprintln!(
         "Computing indel rates across {} chromosome(s).",
         ignore_bed.len()
     );
-
-    // https://stats.stackexchange.com/a/26647
-    let mut chrom_read_stats = regions
-        .values()
-        .flatten()
-        .map(|region| {
-            (
-                region.val.clone(),
-                calculate_stats_indel_rate(bam, region, &ignore_bed).unwrap(),
-            )
-        })
-        .fold(
-            HashMap::new(),
-            |mut acc: HashMap<String, ReadSummaryStats>, (chrom, (prim_stats, sec_stats))| {
-                if let Some(read_stats) = acc.get_mut(&chrom) {
-                    read_stats.primary.mean =
-                        read_stats.primary.mean.algebraic_add(prim_stats.mean);
-                    read_stats.primary.var = read_stats.primary.var.algebraic_add(prim_stats.var);
-                    read_stats.primary.n += prim_stats.n;
-                    read_stats.secondary.mean =
-                        read_stats.secondary.mean.algebraic_add(sec_stats.mean);
-                    read_stats.secondary.var =
-                        read_stats.secondary.var.algebraic_add(sec_stats.var);
-                    read_stats.secondary.n += sec_stats.n;
-                } else {
-                    acc.insert(
-                        chrom.to_owned(),
-                        ReadSummaryStats {
-                            primary: prim_stats,
-                            secondary: sec_stats,
-                        },
-                    );
-                }
-                acc
-            },
-        );
-    for val in chrom_read_stats.values_mut() {
-        let prim = &mut val.primary;
-        let sec = &mut val.secondary;
-        // Update mean
-        prim.mean /= prim.n as f64;
-        sec.mean /= sec.n as f64;
-        // Update variance
-        prim.var /= prim.n as f64;
-        sec.var /= sec.n as f64;
-        // Update stdev
-        prim.stdev = prim.var.sqrt();
-        sec.stdev = sec.var.sqrt();
-    }
+    let tsv_indel_stats = output_dir.join("chrom_indel_stats.tsv");
+    let chrom_read_stats = if !tsv_indel_stats.exists() {
+        let indel_stats = aggregate_stats_indel_rate(&regions, bam, &ignore_bed);
+        write_indel_read_stats(&indel_stats, &tsv_indel_stats)?;
+        indel_stats
+    } else {
+        read_indel_read_stats(&tsv_indel_stats)?
+    };
 
     eprintln!(
         "Detecting events across {} window(s) in {} chromosome(s).",

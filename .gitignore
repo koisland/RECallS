@@ -1,7 +1,5 @@
 /target
-*.graph
-out*
-*.png
+
 
 # pixi environments
 .pixi/*
@@ -9,3 +7,9 @@ out*
 
 # snakemake
 .snakemake
+
+# other
+recalls
+*.graph
+out*
+*.png

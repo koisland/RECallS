@@ -15,6 +15,7 @@ cargo build --release
 
 Then run:
 ```bash
+# Requires minimap2 in PATH
 ./target/release/RECallS -i "${sample}.bam" -f "${sample}.fa.gz"
 ```
 

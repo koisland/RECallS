@@ -18,6 +18,9 @@ pub struct Args {
     #[arg(short, long)]
     pub bed: Option<PathBuf>,
 
+    #[arg(short, long, default_value = "./recalls")]
+    pub output_dir: PathBuf,
+
     /// BED file to ignore
     #[arg[short = 'n', long, default_value = Some("test/amplicon/chm13_chr7_lcr.bed")]]
     pub ignore_bed: Option<PathBuf>,

@@ -1,44 +1,158 @@
-use rammap::Strand;
-use rammap::align::map::AlignFlags;
-use rammap::api::{Aligner, Preset, apply_preset_str};
+use std::{collections::HashMap, process::Command, str::FromStr};
 
-fn _run_whole_contig_dotplot(path: &str, _chrom: &str) -> eyre::Result<()> {
-    let mut aligner = Aligner::from_fasta(path, Preset::MapOnt)?;
-    // -PD -k19 -w19 -m200
-    // https://lh3.github.io/minimap2/minimap2.html#10
-    // -P - Retain all chains and don’t attempt to set primary chains.
-    // -D - If query sequence name/length are identical to the target name/length, ignore diagonal anchors.
-    //      This option also reduces DP-based extension along the diagonal.
-    // -k - Minimizer k-mer length [15]
-    // -w - Minimizer window size [10].
-    //      A minimizer is the smallest k-mer in a window of w consecutive k-mers.
-    // -m - Discard chains with chaining score <INT [40].
-    //      Chaining score equals the approximate number of matching bases minus a concave gap penalty.
-    let opt = aligner.options_mut();
-    apply_preset_str(opt, &mut 19usize, &mut 19usize, &mut true, "map-ont")
-        .map_err(eyre::Report::msg)?;
-    // min_chain_score
-    opt.chaining.min_chain_score = 200;
-    // all_chains
-    opt.flags.insert(AlignFlags::ALL_CHAINS);
-    // no_diag
-    opt.flags.insert(AlignFlags::NO_DIAG);
+use eyre::bail;
+use itertools::Itertools;
+use noodles::fasta;
+use rust_lapper::{Interval, Lapper};
 
-    let results = aligner.map_seq("read1", b"ACGTACGTACGT...");
-    for m in &results.mappings {
-        println!(
-            "{}\t{}\t{}\t{}\tMAPQ={}",
-            m.target_name,
-            m.target_start,
-            m.target_end,
-            if m.strand == Strand::Forward {
-                "+"
-            } else {
-                "-"
-            },
-            m.mapq
-        );
+use crate::io::FastaHandle;
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum Strand {
+    Forward,
+    Reverse,
+}
+
+impl FromStr for Strand {
+    type Err = eyre::Report;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "+" => Ok(Strand::Forward),
+            "-" => Ok(Strand::Reverse),
+            _ => bail!("Invalid strand."),
+        }
     }
+}
 
-    Ok(())
+impl From<Strand> for char {
+    fn from(value: Strand) -> Self {
+        match value {
+            Strand::Forward => '+',
+            Strand::Reverse => '-',
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub struct Paf {
+    pub qchrom: String,
+    pub qlen: usize,
+    pub qst: usize,
+    pub qend: usize,
+    pub strand: Strand,
+    pub tchrom: String,
+    pub tlen: usize,
+    pub tst: usize,
+    pub tend: usize,
+    pub matches: usize,
+    pub aln_len: usize,
+    pub mapq: usize,
+}
+
+pub fn generate_whole_contig_dotplot(
+    fh: &mut FastaHandle,
+    seq_lens: &HashMap<String, usize>,
+) -> eyre::Result<HashMap<String, Lapper<usize, Paf>>> {
+    Ok(seq_lens
+        .iter()
+        .flat_map(|(name, ctg_len)| {
+            let rec = fh
+                .fetch(name, 0, *ctg_len)
+                .expect("Failed to query sequence for minimap2");
+
+            // Create named tempfile and write single sequence
+            let tempfile = tempfile::NamedTempFile::new()
+                .expect("Unable to make tempfile for chrom fasta and minimap2");
+            let tempfile_path = tempfile
+                .as_ref()
+                .to_str()
+                .map(|s| s.to_owned())
+                .expect("Unable to get tempfile name for chrom fasta and minimap2");
+
+            let mut writer = fasta::io::Writer::new(tempfile);
+            writer
+                .write_record(&rec)
+                .expect("Failed to write fasta record");
+
+            let out_mm2 = Command::new("minimap2")
+                .args([
+                    "-PD",
+                    "-k19",
+                    "-w19",
+                    "-m200",
+                    &tempfile_path,
+                    &tempfile_path,
+                ])
+                .output()
+                .expect("Failed to spawn minimap2");
+
+            if out_mm2.status.success() {
+                let paf =
+                    str::from_utf8(&out_mm2.stdout).expect("Invalid utf-8 in minimap2 output");
+                let mut paf_itvs = vec![];
+                for row in paf.split('\n').filter(|r| !r.is_empty()) {
+                    if let Some(
+                        [
+                            qchrom,
+                            qlen,
+                            qst,
+                            qend,
+                            strand,
+                            tchrom,
+                            tlen,
+                            tst,
+                            tend,
+                            matches,
+                            aln_len,
+                            mapq,
+                            _tp,
+                            _cm,
+                            _s1,
+                            _dv,
+                            _rl,
+                        ],
+                    ) = row.split('\t').collect_array()
+                    {
+                        let qlen: usize = qlen.parse().unwrap();
+                        let qst: usize = qst.parse().unwrap();
+                        let qend: usize = qend.parse().unwrap();
+                        let tlen: usize = tlen.parse().unwrap();
+                        let tst: usize = tst.parse().unwrap();
+                        let tend: usize = tend.parse().unwrap();
+                        let matches: usize = matches.parse().unwrap();
+                        let aln_len: usize = aln_len.parse().unwrap();
+                        let mapq: usize = mapq.parse().unwrap();
+                        let itv = Interval {
+                            start: qst,
+                            stop: qend,
+                            val: Paf {
+                                qchrom: qchrom.to_owned(),
+                                qlen,
+                                qst,
+                                qend,
+                                strand: Strand::from_str(strand).unwrap(),
+                                tchrom: tchrom.to_owned(),
+                                tlen,
+                                tst,
+                                tend,
+                                matches,
+                                aln_len,
+                                mapq,
+                            },
+                        };
+                        paf_itvs.push(itv);
+                    } else {
+                        eprintln!("Invalid minimap2 paf row: {row}")
+                    }
+                }
+                Some((name.to_owned(), Lapper::new(paf_itvs)))
+            } else {
+                let err = str::from_utf8(&out_mm2.stderr)
+                    .expect("Invalid utf-8 in minimap2 stderr output");
+                eprintln!("Minimap2 failed: {err}");
+                None
+            }
+        })
+        .collect())
 }

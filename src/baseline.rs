@@ -11,13 +11,13 @@ use noodles::{
 use rust_lapper::{Interval, Lapper};
 
 #[derive(Debug)]
-pub struct ReadSummaryStats {
-    pub primary: SummaryStats,
-    pub secondary: SummaryStats,
+pub struct ReadIndelSummaryStats {
+    pub primary: IndelSummaryStats,
+    pub secondary: IndelSummaryStats,
 }
 
 #[derive(Debug, Default)]
-pub struct SummaryStats {
+pub struct IndelSummaryStats {
     pub mean: f64,
     pub var: f64,
     pub stdev: f64,
@@ -25,11 +25,11 @@ pub struct SummaryStats {
 }
 
 // https://rust-lang-nursery.github.io/rust-cookbook/science/mathematics/statistics.html
-impl SummaryStats {
+impl IndelSummaryStats {
     pub fn new(data: &[f64]) -> Self {
         let n = data.len() as f64;
         if n == 0.0 {
-            return SummaryStats::default();
+            return IndelSummaryStats::default();
         }
         let mean = data.iter().sum::<f64>() / n;
         let var = data
@@ -59,7 +59,7 @@ pub fn calculate_stats_indel_rate(
     bam: &Path,
     itv: &Interval<usize, String>,
     ignore_bed: &HashMap<String, Lapper<usize, String>>,
-) -> eyre::Result<(SummaryStats, SummaryStats)> {
+) -> eyre::Result<(IndelSummaryStats, IndelSummaryStats)> {
     let mut fh = bam::io::indexed_reader::Builder::default().build_from_path(bam)?;
     let header = fh.read_header()?;
     let chrom = &itv.val;
@@ -131,7 +131,63 @@ pub fn calculate_stats_indel_rate(
         }
     }
 
-    let stats_prim_perc_indel = SummaryStats::new(&both_perc_indel[0]);
-    let stats_sec_perc_indel = SummaryStats::new(&both_perc_indel[1]);
+    let stats_prim_perc_indel = IndelSummaryStats::new(&both_perc_indel[0]);
+    let stats_sec_perc_indel = IndelSummaryStats::new(&both_perc_indel[1]);
     Ok((stats_prim_perc_indel, stats_sec_perc_indel))
+}
+
+pub fn aggregate_stats_indel_rate(
+    regions: &HashMap<String, Vec<Interval<usize, String>>>,
+    bam: &Path,
+    ignore_bed: &HashMap<String, Lapper<usize, String>>,
+) -> HashMap<String, ReadIndelSummaryStats> {
+    // https://stats.stackexchange.com/a/26647
+    let mut chrom_read_stats = regions
+        .values()
+        .flatten()
+        .map(|region| {
+            (
+                region.val.clone(),
+                calculate_stats_indel_rate(bam, region, ignore_bed).unwrap(),
+            )
+        })
+        .fold(
+            HashMap::new(),
+            |mut acc: HashMap<String, ReadIndelSummaryStats>, (chrom, (prim_stats, sec_stats))| {
+                if let Some(read_stats) = acc.get_mut(&chrom) {
+                    read_stats.primary.mean =
+                        read_stats.primary.mean.algebraic_add(prim_stats.mean);
+                    read_stats.primary.var = read_stats.primary.var.algebraic_add(prim_stats.var);
+                    read_stats.primary.n += prim_stats.n;
+                    read_stats.secondary.mean =
+                        read_stats.secondary.mean.algebraic_add(sec_stats.mean);
+                    read_stats.secondary.var =
+                        read_stats.secondary.var.algebraic_add(sec_stats.var);
+                    read_stats.secondary.n += sec_stats.n;
+                } else {
+                    acc.insert(
+                        chrom.to_owned(),
+                        ReadIndelSummaryStats {
+                            primary: prim_stats,
+                            secondary: sec_stats,
+                        },
+                    );
+                }
+                acc
+            },
+        );
+    for val in chrom_read_stats.values_mut() {
+        let prim = &mut val.primary;
+        let sec = &mut val.secondary;
+        // Update mean
+        prim.mean /= prim.n as f64;
+        sec.mean /= sec.n as f64;
+        // Update variance
+        prim.var /= prim.n as f64;
+        sec.var /= sec.n as f64;
+        // Update stdev
+        prim.stdev = prim.var.sqrt();
+        sec.stdev = sec.var.sqrt();
+    }
+    chrom_read_stats
 }
