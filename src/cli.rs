@@ -28,4 +28,20 @@ pub struct Args {
     /// Whole genome window size if no bed file provided.
     #[arg(short, long, default_value_t = 5_000_000)]
     pub wg_window: usize,
+
+    /// Inversion indel z-score
+    #[arg(long, default_value_t = 3.4)]
+    pub inv_indel_zscore: f32,
+
+    /// Inversion indel minimum aligned read length
+    #[arg(long, default_value_t = 10_000)]
+    pub inv_min_aln_len: usize,
+
+    /// Deletion maximum region divergence between supplementary aligned regions.
+    #[arg(long, default_value_t = 0.05)]
+    pub del_max_rgn_dv: f32,
+
+    /// Deletion minimum MAPQ of supplementary alignment.
+    #[arg(long, default_value_t = 60)]
+    pub del_min_mapq: u8,
 }

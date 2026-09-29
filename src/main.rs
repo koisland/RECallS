@@ -25,7 +25,7 @@ use crate::{
         FastaHandle, aligned_intervals_windows, read_bed, read_indel_read_stats, read_paf,
         write_indel_read_stats, write_itvs_self_similar_paf,
     },
-    unbalanced_aln::{UnbalancedSummary, is_unbalanced_alignment},
+    unbalanced_aln::is_unbalanced_alignment,
 };
 
 mod baseline;
@@ -42,12 +42,12 @@ pub struct InversionEvent {
     n_indels: usize,
     aln_len: f64,
     is_secondary: bool,
-    unbalanced_summary: Option<UnbalancedSummary>,
+    is_unbalanced: bool,
 }
 impl InversionEvent {
     pub fn as_bed(&self) -> String {
         format!(
-            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:?}",
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
             self.chrom,
             self.start,
             self.stop,
@@ -55,12 +55,27 @@ impl InversionEvent {
             self.n_indels,
             self.aln_len,
             self.is_secondary,
-            self.unbalanced_summary
+            self.is_unbalanced
         )
     }
 }
 
-pub struct DeletionEvent {}
+pub struct DeletionEvent {
+    chrom: String,
+    start: usize,
+    stop: usize,
+    suppl_start: usize,
+    suppl_stop: usize,
+    rname: String,
+}
+impl DeletionEvent {
+    pub fn as_bed(&self) -> String {
+        format!(
+            "{}\t{}\t{}\t{}\t{}\t{}",
+            self.chrom, self.start, self.stop, self.rname, self.suppl_start, self.suppl_stop
+        )
+    }
+}
 
 pub enum Event {
     Deletion(DeletionEvent),
@@ -184,12 +199,16 @@ fn collect_read_markers(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn detect_events(
     bam: &Path,
     itv: &Interval<usize, String>,
     read_stats: &ReadIndelSummaryStats,
     itree_ignore: &Lapper<usize, String>,
     itree_self_similar: &Lapper<usize, Paf>,
+    inv_indel_zscore: f64,
+    inv_min_aln_len: usize,
+    del_min_mapq: u8,
 ) -> eyre::Result<Vec<Event>> {
     let mut fh = bam::io::indexed_reader::Builder::default().build_from_path(bam)?;
     let header = fh.read_header()?;
@@ -199,6 +218,7 @@ fn detect_events(
         chrom.to_owned(),
         Position::new(itv.start.clamp(1, usize::MAX)).unwrap()..=Position::new(itv.stop).unwrap(),
     );
+    let inv_min_aln_len = inv_min_aln_len as f64;
     // Get intervaltree of ignored regions
     let query = fh.query(&header, &region)?;
 
@@ -219,12 +239,12 @@ fn detect_events(
         let read_markers = collect_read_markers(&rec, st, end, itree_ignore)?;
         // TODO: use number of snv as filter
         let indel_rate_zscore = typ_read_stats.zscore(read_markers.n_indels as f64 / aln_len);
-        let is_unbalanced = is_unbalanced_alignment(&read_markers.pos, aln_len, 5, 0.33)?;
+        let unbalanced_summary = is_unbalanced_alignment(&read_markers.pos, aln_len, 5, 0.33)?;
         let (rst, rend) = (
             rec.alignment_start().unwrap().map(|p| p.get())?,
             rec.alignment_end().unwrap().map(|p| p.get())?,
         );
-        if indel_rate_zscore > 3.4 && aln_len > 10_000.0 {
+        if indel_rate_zscore > inv_indel_zscore && aln_len > inv_min_aln_len {
             let event = InversionEvent {
                 chrom: chrom.to_owned(),
                 start: rst,
@@ -233,7 +253,7 @@ fn detect_events(
                 n_indels: read_markers.n_indels,
                 aln_len,
                 is_secondary: is_sec,
-                unbalanced_summary: is_unbalanced,
+                is_unbalanced: unbalanced_summary.map_or_default(|s| s.is_unbalanced),
             };
             events.push(Event::Inversion(event));
         }
@@ -253,19 +273,26 @@ fn detect_events(
             //
             // chrom,start,strand,cigar,mapq,num_mismatches_gaps
             // chr7,2441699,-,12760S18196M69I,60,120
-            for (sa_chrom, sa_start, _sa_strand, sa_cigar, _sa_mapq, _sa_nm) in str::from_utf8(sa_tag)?
-                .split(';')
-                .flat_map(|rec| rec.splitn(6, ',').collect_tuple::<SARecord>())
-                // Must be same chromosome
-                .filter(|sa_rec| sa_rec.0 == chrom)
+            for (_sa_chrom, sa_start, _sa_strand, sa_cigar, sa_mapq, _sa_nm) in
+                str::from_utf8(sa_tag)?
+                    .split(';')
+                    .flat_map(|rec| rec.splitn(6, ',').collect_tuple::<SARecord>())
+                    // Must be same chromosome
+                    .filter(|sa_rec| sa_rec.0 == chrom)
             {
+                let sa_cigar = noodles::sam::record::Cigar::new(sa_cigar.as_bytes());
                 let sa_start: usize = sa_start.parse()?;
+                let sa_aln_len = sa_cigar.alignment_span()?;
+                let sa_end = sa_start + sa_aln_len;
+
+                let sa_mapq: u8 = sa_mapq.parse()?;
+                if sa_mapq < del_min_mapq {
+                    continue;
+                }
 
                 // What is the order of the current alignment relative to the suppl alignment?
                 let sa_upstream = sa_start > rend;
 
-                let sa_cigar = noodles::sam::record::Cigar::new(sa_cigar.as_bytes());
-                let sa_aln_len = sa_cigar.alignment_span()?;
                 let sa_clip_direction = get_clip_direction(sa_cigar.iter().flatten())
                     .with_context(|| format!("Read {rname} must have soft/hardclipped operation in SA cigar: {sa_cigar:?}"))?;
 
@@ -285,24 +312,24 @@ fn detect_events(
                     },
                     //       *
                     // |  >| |<  |
-                    (true, ClipDirection::Right, ClipDirection::Left) => {
-                        let n_similar = itree_self_similar.count(sa_start, sa_start+sa_aln_len);
-                        if n_similar != 0 {
-                            println!("{chrom}\t{rst}\t{rend}\t{sa_chrom}:{sa_start}-{}", sa_start+sa_aln_len);
-
-                        }
-                    },
                     // *     
                     // |  >| |<  |
+                    (true, ClipDirection::Right, ClipDirection::Left) |
                     (false, ClipDirection::Left, ClipDirection::Right) => {
                         let n_similar = itree_self_similar.count(sa_start, sa_start+sa_aln_len);
                         if n_similar != 0 {
-                            println!("{chrom}\t{rst}\t{rend}\t{sa_chrom}:{sa_start}-{}", sa_start+sa_aln_len);
-
+                            let event = DeletionEvent {
+                                chrom: chrom.to_owned(),
+                                start: rst,
+                                stop: rend,
+                                suppl_start: sa_start,
+                                suppl_stop: sa_end,
+                                rname: String::from_utf8(rname.to_vec())?,
+                            };
+                            events.push(Event::Deletion(event));
                         }
                     }
                 }
-                // std::process::exit(1)
             }
         }
     }
@@ -364,11 +391,12 @@ fn main() -> eyre::Result<()> {
 
     let paf_self_align = output_dir.join("chrom_self_align.paf");
     let itvs_self_similar = if !paf_self_align.exists() {
-        let itvs_self_similar = generate_whole_contig_dotplot(&mut fh, &seq_lens, 0.05)?;
+        let itvs_self_similar =
+            generate_whole_contig_dotplot(&mut fh, &seq_lens, args.del_max_rgn_dv)?;
         write_itvs_self_similar_paf(&itvs_self_similar, &paf_self_align)?;
         itvs_self_similar
     } else {
-        read_paf(&paf_self_align, 0.05)?
+        read_paf(&paf_self_align, args.del_max_rgn_dv)?
     };
     let null_itree_self_similar = Lapper::new(vec![]);
 
@@ -406,10 +434,15 @@ fn main() -> eyre::Result<()> {
             read_stats,
             itree_ignore_chrom,
             itree_self_similar_chrom,
+            args.inv_indel_zscore as f64,
+            args.inv_min_aln_len,
+            args.del_min_mapq,
         )?;
         for event in events {
             match event {
-                Event::Deletion(_deletion_event) => todo!(),
+                Event::Deletion(deletion_event) => {
+                    println!("{}", deletion_event.as_bed())
+                }
                 Event::Inversion(inversion_event) => {
                     if let Some(read_events) = read_inv_events.get_mut(&inversion_event.rname) {
                         read_events.push(inversion_event);
@@ -427,7 +460,7 @@ fn main() -> eyre::Result<()> {
 
     for (_, events) in read_inv_events {
         for event in events {
-            // println!("{}", event.as_bed())
+            println!("{}", event.as_bed())
         }
     }
 

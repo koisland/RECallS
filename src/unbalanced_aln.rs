@@ -1,6 +1,7 @@
 use kernel_density_estimation::prelude::*;
 
 #[derive(Debug)]
+#[allow(unused)]
 pub struct UnbalancedSummary {
     pub is_unbalanced: bool,
     pub integral_left: f64,

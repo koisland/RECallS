@@ -13,6 +13,7 @@ dependencies = [
  "log",
  "noodles",
  "ordered-float",
+ "rayon",
  "rust-lapper",
  "tempfile",
 ]
