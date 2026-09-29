@@ -90,6 +90,7 @@ def main():
         # Take only aligned length
         read_aln_len = read.query_alignment_length
         mismatch_pos = []
+        indel_pos = []
         qscores = read.query_alignment_qualities
         if not qscores:
             continue
@@ -101,7 +102,7 @@ def main():
                 if qscore > 30:
                     mismatch_pos.append(qpos)
             elif op == "I" or op == "D":
-                mismatch_pos.append(qpos if qpos else prev_qpos)
+                indel_pos.append(qpos if qpos else prev_qpos)
 
             if qpos:
                 prev_qpos = qpos
@@ -114,7 +115,7 @@ def main():
         x_integral_right = np.linspace(*x_right, window)
 
         if mismatch_pos:
-            kde = stats.gaussian_kde(mismatch_pos)
+            kde = stats.gaussian_kde([*mismatch_pos, *indel_pos])
             integral_left, err_left = integrate.quad_vec(kde, *x_left)
             integral_left = integral_left[0]
             integral_right, err_right = integrate.quad_vec(kde, *x_right)
@@ -131,7 +132,7 @@ def main():
             status = "Split"
         else:
             status = None
-
+        print(read_name, read.reference_start, read.reference_end)
         plt.title(read_name)
         plt.fill_between(
             x_integral_left,

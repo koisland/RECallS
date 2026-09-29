@@ -33,7 +33,6 @@ mod cli;
 mod dotplot;
 mod io;
 mod unbalanced_aln;
-mod utils;
 
 pub struct InversionEvent {
     chrom: String,
@@ -97,6 +96,94 @@ fn get_clip_direction(cg: impl Iterator<Item = Op>) -> Option<ClipDirection> {
     }
 }
 
+#[inline]
+fn check_valid_itv(
+    ref_pos: usize,
+    st: usize,
+    end: usize,
+    itree_ignore: &Lapper<usize, String>,
+) -> bool {
+    ref_pos >= st && ref_pos <= end && itree_ignore.count(ref_pos, ref_pos) == 0
+}
+
+pub struct ReadMarkers {
+    pub pos: Vec<f64>,
+    pub n_indels: usize,
+    pub n_mismatches: usize,
+}
+
+fn collect_read_markers(
+    rec: &bam::Record,
+    st: usize,
+    end: usize,
+    itree_ignore: &Lapper<usize, String>,
+) -> eyre::Result<ReadMarkers> {
+    let cg = rec.cigar();
+    let qscores = rec.quality_scores().as_bytes();
+    let mut marker_qpos = vec![];
+    let mut n_mismatches: usize = 0;
+    let mut n_indels: usize = 0;
+
+    let mut ref_pos: usize = rec
+        .alignment_start()
+        .with_context(|| format!("No alignment start for {rec:?}"))??
+        .get();
+    let mut qpos: usize = 0;
+    for (op, l) in cg.iter().flatten().map(|op| (op.kind(), op.len())) {
+        match op {
+            Kind::Match | Kind::SequenceMatch => {
+                for _ in ref_pos..(ref_pos + l) {
+                    qpos += 1
+                }
+                ref_pos += l
+            }
+            Kind::SequenceMismatch => {
+                for _ in ref_pos..(ref_pos + l) {
+                    qpos += 1
+                }
+                // Must have mismatch
+                if check_valid_itv(ref_pos, st, end, itree_ignore)
+                    && qscores.get(qpos).cloned().unwrap_or_default() > 30
+                {
+                    n_mismatches += 1;
+                    marker_qpos.push(qpos as f64);
+                }
+                ref_pos += l
+            }
+            Kind::Pad | Kind::SoftClip => {
+                qpos += l;
+            }
+            Kind::Insertion => {
+                if check_valid_itv(ref_pos, st, end, itree_ignore) {
+                    for _ in ref_pos..(ref_pos + l) {
+                        n_indels += 1;
+                        marker_qpos.push(qpos as f64);
+                    }
+                }
+                qpos += l;
+            }
+            Kind::Deletion => {
+                if check_valid_itv(ref_pos, st, end, itree_ignore) {
+                    for _ in ref_pos..(ref_pos + l) {
+                        n_indels += 1;
+                        marker_qpos.push(qpos as f64);
+                    }
+                }
+                ref_pos += l
+            }
+            Kind::HardClip => {
+                continue;
+            }
+            Kind::Skip => ref_pos += l,
+        }
+    }
+    Ok(ReadMarkers {
+        pos: marker_qpos,
+        n_indels,
+        n_mismatches,
+    })
+}
+
 fn detect_events(
     bam: &Path,
     _fa: &Path,
@@ -120,13 +207,9 @@ fn detect_events(
     let indel_read_stats = [&read_stats.primary, &read_stats.secondary];
     let mut events = vec![];
 
-    let check_valid_itv =
-        |ref_pos| ref_pos >= st && ref_pos <= end && itree_ignore.count(ref_pos, ref_pos) == 0;
-
     for rec in query.records().flatten() {
         let rname = rec.name().unwrap();
         let cg = rec.cigar();
-        let qscores = rec.quality_scores().as_bytes();
         let is_suppl = rec.flags().contains(Flags::SUPPLEMENTARY);
         let is_sec = rec.flags().contains(Flags::SECONDARY);
         let typ_read_stats = &indel_read_stats[is_sec as usize];
@@ -135,61 +218,10 @@ fn detect_events(
         // Look for:
         // * unbalanced reads bordered by large indels. check secondary alignment
         // * supplementary alignments on same chrom (for now)
-        let mut marker_qpos = vec![];
-        let mut n_indels: usize = 0;
-
-        let mut ref_pos: usize = rec.alignment_start().unwrap()?.get();
-        let mut qpos: usize = 0;
-        for (op, l) in cg.iter().flatten().map(|op| (op.kind(), op.len())) {
-            match op {
-                Kind::Match | Kind::SequenceMatch => {
-                    for _ in ref_pos..(ref_pos + l) {
-                        qpos += 1
-                    }
-                    ref_pos += l
-                }
-                Kind::SequenceMismatch => {
-                    for _ in ref_pos..(ref_pos + l) {
-                        qpos += 1
-                    }
-                    // Must have mismatch
-                    if check_valid_itv(ref_pos)
-                        && qscores.get(qpos).cloned().unwrap_or_default() > 30
-                    {
-                        marker_qpos.push(qpos as f64);
-                    }
-                    ref_pos += l
-                }
-                Kind::Pad | Kind::SoftClip => {
-                    qpos += l;
-                }
-                Kind::Insertion => {
-                    if check_valid_itv(ref_pos) {
-                        for _ in ref_pos..(ref_pos + l) {
-                            n_indels += 1;
-                            marker_qpos.push(qpos as f64);
-                        }
-                    }
-                    qpos += l;
-                }
-                Kind::Deletion => {
-                    if check_valid_itv(ref_pos) {
-                        for _ in ref_pos..(ref_pos + l) {
-                            n_indels += 1;
-                            marker_qpos.push(qpos as f64);
-                        }
-                    }
-                    ref_pos += l
-                }
-                Kind::HardClip => {
-                    continue;
-                }
-                Kind::Skip => ref_pos += l,
-            }
-        }
-
-        let indel_rate_zscore = typ_read_stats.zscore(n_indels as f64 / aln_len);
-        let is_unbalanced = is_unbalanced_alignment(&marker_qpos, aln_len, 5, 0.33)?;
+        let read_markers = collect_read_markers(&rec, st, end, itree_ignore)?;
+        // TODO: use number of snv as filter
+        let indel_rate_zscore = typ_read_stats.zscore(read_markers.n_indels as f64 / aln_len);
+        let is_unbalanced = is_unbalanced_alignment(&read_markers.pos, aln_len, 5, 0.33)?;
         let (rst, rend) = (
             rec.alignment_start().unwrap().map(|p| p.get())?,
             rec.alignment_end().unwrap().map(|p| p.get())?,
@@ -200,7 +232,7 @@ fn detect_events(
                 start: rst,
                 stop: rend,
                 rname: String::from_utf8(rname.to_vec())?,
-                n_indels,
+                n_indels: read_markers.n_indels,
                 aln_len,
                 is_secondary: is_sec,
                 unbalanced_summary: is_unbalanced,

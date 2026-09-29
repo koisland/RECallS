@@ -1,4 +1,3 @@
-use integrate::prelude::*;
 use kernel_density_estimation::prelude::*;
 
 #[derive(Debug)]
@@ -33,25 +32,23 @@ pub fn is_unbalanced_alignment(
     }
     // Get midpoint of read
     let midpt = read_len / 2.0;
-    let (left_lower, left_upper) = (0f64, midpt);
-    let (right_lower, right_upper) = (midpt, read_len);
 
     if !marker_qpos.is_empty() {
         // Calculate PDF of read mismatch positions
         // https://aakinshin.net/posts/kde-bw/
+        // Silverman bandwith results in NaNs
         let kde = KernelDensityEstimator::new(
             marker_qpos,
-            |data: &[f64]| Silverman.bandwidth(data),
+            |data: &[f64]| Scott.bandwidth(data),
             Normal,
         );
         // Find area under curve of left and right side
-        let (integral_left, _) =
-            gauss_kronrod_rule(|x| kde.pdf(&[x])[0], left_lower, left_upper, 7)
-                .map_err(|err| eyre::Report::msg(err))?;
-        let (integral_right, _) =
-            gauss_kronrod_rule(|x| kde.pdf(&[x])[0], right_lower, right_upper, 7)
-                .map_err(|err| eyre::Report::msg(err))?;
+        let y = kde.pdf(marker_qpos);
+        let total = y.iter().sum::<f64>();
+        let (Ok(idx) | Err(idx)) = marker_qpos.binary_search_by(|a| a.total_cmp(&midpt));
 
+        let integral_left = y.get(0..idx+1).map(|sl| sl.iter().sum::<f64>()).unwrap_or_default() / total;
+        let integral_right = y.get(idx+1..).map(|sl| sl.iter().sum::<f64>()).unwrap_or_default() / total;
         let abs_diff_area = (integral_left - integral_right).abs();
         Ok(Some(UnbalancedSummary {
             is_unbalanced: abs_diff_area > thr_unbalanced,
@@ -75,13 +72,11 @@ mod test {
         bam::{self, io::IndexedReader},
         bgzf,
         core::{Position, Region},
-        sam::alignment::{
-            Record,
-            record::{Flags, cigar::op::Kind},
-        },
+        sam::alignment::{Record, record::Flags},
     };
+    use rust_lapper::Lapper;
 
-    use crate::{unbalanced_aln::is_unbalanced_alignment, utils::get_aligned_pairs};
+    use crate::{collect_read_markers, unbalanced_aln::is_unbalanced_alignment};
 
     pub fn get_coords_from_region(region: &Region) -> eyre::Result<(usize, usize)> {
         let (std::ops::Bound::Included(st), std::ops::Bound::Included(end)) = (
@@ -101,9 +96,8 @@ mod test {
         let header = fh.read_header()?;
         let (st, end) = get_coords_from_region(&region)?;
         let query = fh.query(&header, &region)?;
+        let null_lapper = Lapper::new(vec![]);
         let mut mismatches_per_read = HashMap::new();
-
-        let mut mismatches = vec![];
 
         for rec in query
             .records()
@@ -114,26 +108,14 @@ mod test {
             if !reads.contains(name) {
                 continue;
             }
-            let cg = rec.cigar();
-            let aln_pairs = get_aligned_pairs(
-                cg.iter().flatten().map(|op| (op.kind(), op.len())),
-                rec.alignment_start().unwrap()?.get(),
-            )?;
-            let qscores = rec.quality_scores().as_bytes();
+            let read_markers = collect_read_markers(&rec, st, end, &null_lapper)?;
+            let marker_pos = if read_markers.n_mismatches < 5 {
+                vec![]
+            } else {
+                read_markers.pos
+            };
             let aln_len = rec.alignment_span().unwrap()? as f64;
-            for (qpos, _refpos, kind) in aln_pairs
-                .into_iter()
-                .filter(|(_, refpos, _)| *refpos >= st && *refpos <= end)
-            {
-                if let Kind::SequenceMismatch = kind {
-                    let qscore = qscores[qpos];
-                    if qscore > 30 {
-                        mismatches.push(qpos as f64);
-                    }
-                }
-            }
-            mismatches_per_read.insert(name.to_owned(), (mismatches.clone(), aln_len));
-            mismatches.clear();
+            mismatches_per_read.insert(name.to_owned(), (marker_pos, aln_len));
         }
         Ok(mismatches_per_read)
     }
