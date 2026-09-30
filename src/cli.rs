@@ -25,6 +25,9 @@ pub struct Args {
     #[arg[short = 'n', long]]
     pub ignore_bed: Option<PathBuf>,
 
+    /// Number of threads
+    pub threads: usize,
+
     /// Whole genome window size if no bed file provided.
     #[arg(short, long, default_value_t = 5_000_000)]
     pub wg_window: usize,

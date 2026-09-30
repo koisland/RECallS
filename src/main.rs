@@ -38,6 +38,11 @@ fn main() -> eyre::Result<()> {
     let output_dir = &args.output_dir;
     std::fs::create_dir_all(output_dir)?;
 
+    // set up global threadpool
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(args.threads)
+        .build_global()?;
+
     let ignore_bed: HashMap<String, Lapper<usize, String>> = args
         .ignore_bed
         .as_ref()
