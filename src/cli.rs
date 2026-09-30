@@ -26,6 +26,7 @@ pub struct Args {
     pub ignore_bed: Option<PathBuf>,
 
     /// Number of threads
+    #[arg(short, long)]
     pub threads: usize,
 
     /// Whole genome window size if no bed file provided.
