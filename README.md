@@ -51,5 +51,8 @@ snakemake -c 8 -s test/amplicon/Snakefile -np
 
 Then to run:
 ```bash
-./target/release/RECallS -i test/amplicon/chm13_chr7_sim.bam -f test/amplicon/chm13_chr7.fa.gz
+./target/release/RECallS \
+-i test/amplicon/chm13_chr7_sim.bam \
+-f test/amplicon/chm13_chr7.fa.gz \
+-n "test/amplicon/chm13_chr7_lcr.bed"
 ```
