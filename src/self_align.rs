@@ -101,6 +101,7 @@ pub fn generate_contig_self_alignment(
                 .expect("Failed to spawn minimap2");
 
             if out_mm2.status.success() {
+                eprintln!("Finished self alignment of {name}");
                 let paf =
                     str::from_utf8(&out_mm2.stdout).expect("Invalid utf-8 in minimap2 output");
                 let mut paf_itvs = vec![];
