@@ -20,19 +20,36 @@ Then run:
 ./target/release/RECallS -i "${sample}.bam" -f "${sample}.fa.gz"
 ```
 
-## Why?
-No one seems to care about building decent, isolated CLI tools...
-* Porsborg et al.
-    * [Code](https://github.com/PeterSoerud/recombination_calling/blob/main/scripts/calling/recombination.py#L5-32) w/27 required arguments and no documentation/defaults
+## Outputs
+Within the output directory (`-o`):
+```
+recalls
+├── calls_del.bed
+├── calls_inv.bed
+├── chrom_indel_stats.tsv
+└── chrom_self_align.paf
+```
 
-* Schweiger et al.
-    * Integrated in Snakemake workflow
-        * In run [directives](https://github.com/regevs/recombination/blob/main/snakefiles/read_analysis.snk#L50) so if things crash, you're S.O.L. debugging
-        * No dependencies pinned
-        * Assumes human and has extraneous alignment [steps](https://github.com/regevs/recombination/blob/main/snakefiles/read_analysis.snk#L648)
+Where:
+|name|desc|
+|-|-|
+|calls_del.bed|Putative intrachromosomal deletion event breakpoints|
+|calls_inv.bed|Putative intrachromosomal inversion event breakpoints|
+|chrom_indel_stats.tsv|Chromosome read indel stats for primary and secondary alignments|
+|chrom_self_align.paf|PAF file for self-alignment. Uses `minimap2` and params: `-PD -k19 -w19 -m200`|
 
-I don't want to deal with this so better to start from scratch.
+## Docs
+See [`docs/long_distance.md`](docs/long_distance.md) for overview.
 
-## Sources
-* https://www.nature.com/articles/s41467-025-65248-3
-* https://www.nature.com/articles/s41586-026-10901-0
+## Test
+To generate simulated data in CHM13 chr7.
+```bash
+# Install dependencies
+pixi install
+snakemake -c 8 -s test/amplicon/Snakefile -np
+```
+
+Then to run:
+```bash
+./target/release/RECallS -i test/amplicon/chm13_chr7_sim.bam -f test/amplicon/chm13_chr7.fa.gz
+```
