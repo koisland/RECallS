@@ -44,4 +44,8 @@ pub struct Args {
     /// Deletion minimum MAPQ of supplementary alignment.
     #[arg(long, default_value_t = 60)]
     pub del_min_mapq: u8,
+
+    /// Deletion minimum number of overlaps with other supplementary alignment events required to call deletion event.
+    #[arg(long, default_value_t = 2)]
+    pub del_min_ovl_cnt: usize,
 }

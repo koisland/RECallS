@@ -9,6 +9,10 @@ pub struct InversionEvent {
     pub is_unbalanced: bool,
 }
 impl InversionEvent {
+    pub fn header() -> &'static str {
+        "#chrom\tstart\tstop\tread_name\tn_indels\taln_len\tis_secondary\tis_unbalanced"
+    }
+
     pub fn as_bed(&self) -> String {
         format!(
             "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
@@ -24,6 +28,7 @@ impl InversionEvent {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeletionEvent {
     pub chrom: String,
     pub start: usize,
@@ -33,6 +38,10 @@ pub struct DeletionEvent {
     pub rname: String,
 }
 impl DeletionEvent {
+    pub fn header() -> &'static str {
+        "#chrom\tstart\tstop\tread_name\tsuppl_start\tsuppl_stop"
+    }
+
     pub fn as_bed(&self) -> String {
         format!(
             "{}\t{}\t{}\t{}\t{}\t{}",

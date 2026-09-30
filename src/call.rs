@@ -18,8 +18,8 @@ use rust_lapper::{Interval, Lapper};
 
 use crate::{
     baseline::ReadIndelSummaryStats,
-    self_align::Paf,
     events::{DeletionEvent, Event, InversionEvent},
+    self_align::Paf,
     unbalanced_aln::is_unbalanced_alignment,
 };
 
@@ -62,6 +62,7 @@ fn check_valid_itv(
     ref_pos >= st && ref_pos <= end && itree_ignore.count(ref_pos, ref_pos) == 0
 }
 
+#[allow(unused)]
 pub struct ReadMarkers {
     pub pos: Vec<f64>,
     pub n_indels: usize,

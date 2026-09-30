@@ -1,9 +1,10 @@
-use std::{collections::HashMap, process::Command, str::FromStr};
+use std::{collections::HashMap, path::Path, process::Command, str::FromStr};
 
 use eyre::bail;
 use itertools::Itertools;
 use noodles::fasta::{self, Record, record::Definition};
 use ordered_float::OrderedFloat;
+use rayon::prelude::*;
 use rust_lapper::{Interval, Lapper};
 
 use crate::io::FastaHandle;
@@ -52,13 +53,14 @@ pub struct Paf {
 }
 
 pub fn generate_contig_self_alignment(
-    fh: &mut FastaHandle,
+    fa: &Path,
     seq_lens: &HashMap<String, usize>,
     max_dv: f32,
 ) -> eyre::Result<HashMap<String, Lapper<usize, Paf>>> {
     Ok(seq_lens
-        .iter()
+        .par_iter()
         .flat_map(|(name, ctg_len)| {
+            let mut fh = FastaHandle::new(fa).expect("Cannot open fasta file");
             let rec = fh
                 .fetch(name, 0, *ctg_len)
                 .expect("Failed to query sequence for minimap2");
