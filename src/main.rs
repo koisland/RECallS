@@ -70,10 +70,6 @@ fn main() -> eyre::Result<()> {
         aligned_intervals_windows(&mut fh, args.wg_window)
     }?;
 
-    eprintln!(
-        "Detecting homologous regions from self-alignment of {} chromosome(s).",
-        ignore_bed.len()
-    );
     // Generate dotplot per contig
     let fh = FastaHandle::new(fa)?;
     let seq_lens: HashMap<String, usize> = fh
@@ -86,6 +82,11 @@ fn main() -> eyre::Result<()> {
             (ctg_name.to_owned(), ctg_len)
         })
         .collect();
+
+    eprintln!(
+        "Detecting homologous regions from self-alignment of {} chromosome(s).",
+        seq_lens.len()
+    );
     std::mem::drop(fh);
 
     let paf_self_align = output_dir.join("chrom_self_align.paf");
