@@ -8,6 +8,7 @@ use noodles::{
         record::{Flags, cigar::op::Kind},
     },
 };
+use rayon::prelude::*;
 use rust_lapper::{Interval, Lapper};
 
 #[derive(Debug)]
@@ -55,6 +56,14 @@ impl IndelSummaryStats {
 }
 
 /// Calculate mean indel rate for primary/supplementary and secondary alignments as prior
+///
+/// # Arguments
+/// * bam: path to bam
+/// * itv: whole-contig interval
+/// * ignore_bed: regions to ignore
+///
+/// # Returns
+/// * tuple of `IndelSummaryStats` where first is of primary alignments and second is of secondary alignments.
 pub fn calculate_stats_indel_rate(
     bam: &Path,
     itv: &Interval<usize, String>,
@@ -142,9 +151,9 @@ pub fn aggregate_stats_indel_rate(
     ignore_bed: &HashMap<String, Lapper<usize, String>>,
 ) -> HashMap<String, ReadIndelSummaryStats> {
     // https://stats.stackexchange.com/a/26647
-    let mut chrom_read_stats = regions
-        .values()
-        .flatten()
+    let regions: Vec<&Interval<usize, String>> = regions.values().flatten().collect();
+    let mut chrom_read_stats: HashMap<String, ReadIndelSummaryStats> = regions
+        .into_par_iter()
         .map(|region| {
             (
                 region.val.clone(),
@@ -152,7 +161,7 @@ pub fn aggregate_stats_indel_rate(
             )
         })
         .fold(
-            HashMap::new(),
+            HashMap::new,
             |mut acc: HashMap<String, ReadIndelSummaryStats>, (chrom, (prim_stats, sec_stats))| {
                 if let Some(read_stats) = acc.get_mut(&chrom) {
                     read_stats.primary.mean =
@@ -175,7 +184,12 @@ pub fn aggregate_stats_indel_rate(
                 }
                 acc
             },
-        );
+        )
+        .reduce(HashMap::new, |mut h1, h2| {
+            h1.extend(h2);
+            h1
+        });
+
     for val in chrom_read_stats.values_mut() {
         let prim = &mut val.primary;
         let sec = &mut val.secondary;

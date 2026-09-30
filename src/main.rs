@@ -123,7 +123,7 @@ fn main() -> eyre::Result<()> {
                 .get(&region.val)
                 .unwrap_or(&null_itree_self_similar);
 
-            eprintln!("On {}:{}-{}...", &region.val, region.start, region.stop);
+            eprintln!("On {}:{}-{}...", region.val, region.start, region.stop);
             let events = detect_events(
                 bam,
                 region,
