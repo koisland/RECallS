@@ -138,6 +138,8 @@ fn main() -> eyre::Result<()> {
                 itree_self_similar_chrom,
                 args.inv_indel_zscore as f64,
                 args.inv_min_aln_len,
+                args.inv_thr_unbalanced as f64,
+                args.inv_min_num_snvs,
                 args.del_min_mapq,
             );
             match events {

@@ -150,6 +150,8 @@ pub fn detect_events(
     itree_self_similar: &Lapper<usize, Paf>,
     inv_indel_zscore: f64,
     inv_min_aln_len: usize,
+    inv_thr_unbalanced: f64,
+    inv_min_num_snvs: usize,
     del_min_mapq: u8,
 ) -> eyre::Result<Vec<Event>> {
     let mut fh = bam::io::indexed_reader::Builder::default().build_from_path(bam)?;
@@ -181,12 +183,25 @@ pub fn detect_events(
         let read_markers = collect_read_markers(&rec, st, end, itree_ignore)?;
         // TODO: use number of snv as filter
         let indel_rate_zscore = typ_read_stats.zscore(read_markers.n_indels as f64 / aln_len);
-        let unbalanced_summary = is_unbalanced_alignment(&read_markers.pos, aln_len, 5, 0.33)?;
+        let unbalanced_summary = is_unbalanced_alignment(
+            &read_markers.pos,
+            aln_len,
+            inv_min_num_snvs,
+            inv_thr_unbalanced,
+        )?;
         let (rst, rend) = (
             rec.alignment_start().unwrap().map(|p| p.get())?,
             rec.alignment_end().unwrap().map(|p| p.get())?,
         );
-        if indel_rate_zscore > inv_indel_zscore && aln_len > inv_min_aln_len {
+        let is_unbalanced = unbalanced_summary
+            .as_ref()
+            .map(|s| s.is_unbalanced)
+            .unwrap_or_default();
+        if indel_rate_zscore > inv_indel_zscore
+            && aln_len > inv_min_aln_len
+            && read_markers.n_mismatches >= inv_min_num_snvs
+            && is_unbalanced
+        {
             let event = InversionEvent {
                 chrom: chrom.to_owned(),
                 start: rst,
@@ -195,7 +210,7 @@ pub fn detect_events(
                 n_indels: read_markers.n_indels,
                 aln_len,
                 is_secondary: is_sec,
-                is_unbalanced: unbalanced_summary.map_or_default(|s| s.is_unbalanced),
+                is_unbalanced,
             };
             events.push(Event::Inversion(event));
         }

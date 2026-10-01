@@ -22,15 +22,12 @@ impl Add for ReadIndelSummaryStats {
     type Output = ReadIndelSummaryStats;
 
     fn add(mut self, rhs: Self) -> Self::Output {
-        self.primary.mean =
-            self.primary.mean.algebraic_add(rhs.primary.mean);
+        self.primary.mean = self.primary.mean.algebraic_add(rhs.primary.mean);
         self.primary.var = self.primary.var.algebraic_add(rhs.primary.var);
         self.primary.n += rhs.primary.n;
         // secondary
-        self.secondary.mean =
-            self.secondary.mean.algebraic_add(rhs.secondary.mean);
-        self.secondary.var =
-            self.secondary.var.algebraic_add(rhs.secondary.var);
+        self.secondary.mean = self.secondary.mean.algebraic_add(rhs.secondary.mean);
+        self.secondary.var = self.secondary.var.algebraic_add(rhs.secondary.var);
         self.secondary.n += rhs.secondary.n;
         self
     }
@@ -189,10 +186,11 @@ pub fn aggregate_stats_indel_rate(
             |mut acc: HashMap<String, ReadIndelSummaryStats>, (chrom, (prim_stats, sec_stats))| {
                 if let Some(read_stats) = acc.get_mut(&chrom) {
                     // Sum up stats (mean, stdev, and n) across windows
-                    let new_read_stats = read_stats.clone() + ReadIndelSummaryStats {
-                        primary: prim_stats,
-                        secondary: sec_stats
-                    };
+                    let new_read_stats = read_stats.clone()
+                        + ReadIndelSummaryStats {
+                            primary: prim_stats,
+                            secondary: sec_stats,
+                        };
                     *read_stats = new_read_stats
                 } else {
                     acc.insert(
@@ -208,7 +206,12 @@ pub fn aggregate_stats_indel_rate(
         )
         .reduce(HashMap::new, |mut a_stats, mut b_stats| {
             let mut all_stats = HashMap::new();
-            let chroms = a_stats.keys().chain(b_stats.keys()).unique().cloned().collect_vec();
+            let chroms = a_stats
+                .keys()
+                .chain(b_stats.keys())
+                .unique()
+                .cloned()
+                .collect_vec();
             for chrom in chroms {
                 let a_chrom_stats = a_stats.remove(&chrom);
                 let b_chrom_stats = b_stats.remove(&chrom);
@@ -216,14 +219,14 @@ pub fn aggregate_stats_indel_rate(
                 match (a_chrom_stats, b_chrom_stats) {
                     (None, Some(b_chrom_stats)) => {
                         all_stats.insert(chrom, b_chrom_stats);
-                    },
+                    }
                     (Some(a_chrom_stats), None) => {
                         all_stats.insert(chrom, a_chrom_stats);
-                    },
+                    }
                     (Some(a_chrom_stats), Some(b_chrom_stats)) => {
                         let new_read_stats = a_chrom_stats + b_chrom_stats;
                         all_stats.insert(chrom, new_read_stats);
-                    },
+                    }
                     _ => unreachable!("Keys derived from a_stats so not possible"),
                 }
             }
