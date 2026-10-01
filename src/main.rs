@@ -101,7 +101,7 @@ fn main() -> eyre::Result<()> {
 
     eprintln!(
         "Computing indel rates across {} chromosome(s).",
-        ignore_bed.len()
+        seq_lens.len()
     );
     let tsv_indel_stats = output_dir.join("chrom_indel_stats.tsv");
     let chrom_read_stats = if !tsv_indel_stats.exists() {
@@ -114,8 +114,8 @@ fn main() -> eyre::Result<()> {
 
     eprintln!(
         "Detecting events across {} window(s) in {} chromosome(s).",
-        ignore_bed.values().map(|b| b.len()).sum::<usize>(),
-        ignore_bed.len()
+        regions.values().map(|b| b.len()).sum::<usize>(),
+        seq_lens.len()
     );
 
     let intervals: Vec<&Interval<usize, String>> = regions.values().flatten().collect();

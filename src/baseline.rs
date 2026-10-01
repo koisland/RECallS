@@ -1,5 +1,6 @@
-use std::{collections::HashMap, path::Path};
+use std::{collections::HashMap, ops::Add, path::Path};
 
+use itertools::Itertools;
 use noodles::{
     bam,
     core::{Position, Region},
@@ -11,13 +12,31 @@ use noodles::{
 use rayon::prelude::*;
 use rust_lapper::{Interval, Lapper};
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ReadIndelSummaryStats {
     pub primary: IndelSummaryStats,
     pub secondary: IndelSummaryStats,
 }
 
-#[derive(Debug, Default)]
+impl Add for ReadIndelSummaryStats {
+    type Output = ReadIndelSummaryStats;
+
+    fn add(mut self, rhs: Self) -> Self::Output {
+        self.primary.mean =
+            self.primary.mean.algebraic_add(rhs.primary.mean);
+        self.primary.var = self.primary.var.algebraic_add(rhs.primary.var);
+        self.primary.n += rhs.primary.n;
+        // secondary
+        self.secondary.mean =
+            self.secondary.mean.algebraic_add(rhs.secondary.mean);
+        self.secondary.var =
+            self.secondary.var.algebraic_add(rhs.secondary.var);
+        self.secondary.n += rhs.secondary.n;
+        self
+    }
+}
+
+#[derive(Debug, Default, Clone)]
 pub struct IndelSummaryStats {
     pub mean: f64,
     pub var: f64,
@@ -114,12 +133,17 @@ pub fn calculate_stats_indel_rate(
                 }
                 Kind::Insertion => {
                     // Even though doesn't consume reference position, we want to track length.
-                    indel_len += length;
+                    // May result in indel rate over 100%?
+                    if itree_ignore.count(pos, pos + length) == 0 {
+                        indel_len += length;
+                    }
                 }
                 Kind::Pad | Kind::SoftClip | Kind::HardClip => {}
                 Kind::Deletion => {
                     if itree_ignore.count(pos, pos + length) != 0 {
                         omit_len += length;
+                    } else {
+                        indel_len += length;
                     }
                     pos += length;
                 }
@@ -164,15 +188,12 @@ pub fn aggregate_stats_indel_rate(
             HashMap::new,
             |mut acc: HashMap<String, ReadIndelSummaryStats>, (chrom, (prim_stats, sec_stats))| {
                 if let Some(read_stats) = acc.get_mut(&chrom) {
-                    read_stats.primary.mean =
-                        read_stats.primary.mean.algebraic_add(prim_stats.mean);
-                    read_stats.primary.var = read_stats.primary.var.algebraic_add(prim_stats.var);
-                    read_stats.primary.n += prim_stats.n;
-                    read_stats.secondary.mean =
-                        read_stats.secondary.mean.algebraic_add(sec_stats.mean);
-                    read_stats.secondary.var =
-                        read_stats.secondary.var.algebraic_add(sec_stats.var);
-                    read_stats.secondary.n += sec_stats.n;
+                    // Sum up stats (mean, stdev, and n) across windows
+                    let new_read_stats = read_stats.clone() + ReadIndelSummaryStats {
+                        primary: prim_stats,
+                        secondary: sec_stats
+                    };
+                    *read_stats = new_read_stats
                 } else {
                     acc.insert(
                         chrom.to_owned(),
@@ -185,11 +206,31 @@ pub fn aggregate_stats_indel_rate(
                 acc
             },
         )
-        .reduce(HashMap::new, |mut h1, h2| {
-            h1.extend(h2);
-            h1
+        .reduce(HashMap::new, |mut a_stats, mut b_stats| {
+            let mut all_stats = HashMap::new();
+            let chroms = a_stats.keys().chain(b_stats.keys()).unique().cloned().collect_vec();
+            for chrom in chroms {
+                let a_chrom_stats = a_stats.remove(&chrom);
+                let b_chrom_stats = b_stats.remove(&chrom);
+                // Merge hashmaps
+                match (a_chrom_stats, b_chrom_stats) {
+                    (None, Some(b_chrom_stats)) => {
+                        all_stats.insert(chrom, b_chrom_stats);
+                    },
+                    (Some(a_chrom_stats), None) => {
+                        all_stats.insert(chrom, a_chrom_stats);
+                    },
+                    (Some(a_chrom_stats), Some(b_chrom_stats)) => {
+                        let new_read_stats = a_chrom_stats + b_chrom_stats;
+                        all_stats.insert(chrom, new_read_stats);
+                    },
+                    _ => unreachable!("Keys derived from a_stats so not possible"),
+                }
+            }
+            all_stats
         });
 
+    // Then average stats
     for val in chrom_read_stats.values_mut() {
         let prim = &mut val.primary;
         let sec = &mut val.secondary;
