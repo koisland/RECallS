@@ -26,7 +26,7 @@ pub struct Args {
     pub ignore_bed: Option<PathBuf>,
 
     /// Number of threads
-    #[arg(short, long)]
+    #[arg(short, long, default_value_t = 4)]
     pub threads: usize,
 
     /// Whole genome window size if no bed file provided.
@@ -42,11 +42,11 @@ pub struct Args {
     pub inv_min_aln_len: usize,
 
     /// Inversion indel threshold unbalanced
-    #[arg(long, default_value_t = 0.5)]
+    #[arg(long, default_value_t = 0.9)]
     pub inv_thr_unbalanced: f32,
 
     /// Inversion minimum number of SNVs
-    #[arg(long, default_value_t = 5)]
+    #[arg(long, default_value_t = 10)]
     pub inv_min_num_snvs: usize,
 
     /// Deletion maximum region divergence between supplementary aligned regions.

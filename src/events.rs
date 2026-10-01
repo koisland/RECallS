@@ -1,10 +1,11 @@
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct InversionEvent {
     pub chrom: String,
     pub start: usize,
     pub stop: usize,
     pub rname: String,
     pub n_indels: usize,
-    pub aln_len: f64,
+    pub aln_len: usize,
     pub is_secondary: bool,
     pub is_unbalanced: bool,
 }

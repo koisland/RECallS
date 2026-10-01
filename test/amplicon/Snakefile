@@ -6,9 +6,9 @@ LOGDIR = "test/amplicon/logs"
 
 REF = join(OUTDIR, f"{FNAME_PREFIX}.fa.gz")
 # TODO: Scale up
-SEEDS = [42, 120, 430000032]
-EVENTS = ["inversion", "deletion", "deletion"]
-OPTS = ["", "", "-d '[1_000_000, 10_000_000]'"]
+SEEDS = [42, 232323, 120, 430000032]
+EVENTS = ["inversion", "inversion", "deletion", "deletion"]
+OPTS = ["", "", "", "-d '[1_000_000, 10_000_000]'"]
 OPTS = {
     (seed, event): opts
     for seed, event, opts in zip(SEEDS, EVENTS, OPTS, strict=True)

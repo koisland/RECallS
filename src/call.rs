@@ -21,6 +21,7 @@ use crate::{
     events::{DeletionEvent, Event, InversionEvent},
     self_align::Paf,
     unbalanced_aln::is_unbalanced_alignment,
+    utils::overlap_length,
 };
 
 pub enum ClipDirection {
@@ -175,30 +176,39 @@ pub fn detect_events(
         let is_suppl = rec.flags().contains(Flags::SUPPLEMENTARY);
         let is_sec = rec.flags().contains(Flags::SECONDARY);
         let typ_read_stats = &indel_read_stats[is_sec as usize];
-        let aln_len = noodles::sam::alignment::Record::alignment_span(&rec).unwrap()? as f64;
+        let aln_len = noodles::sam::alignment::Record::alignment_span(&rec).unwrap()?;
+        let aln_len_f = aln_len as f64;
+        let (rst, rend) = (
+            rec.alignment_start().unwrap().map(|p| p.get())?,
+            rec.alignment_end().unwrap().map(|p| p.get())?,
+        );
+
+        // Ignore if read overlaps majority of any ignored region.
+        if itree_ignore.find(rst, rend).any(|ovl| {
+            let ovl_len = overlap_length(rst, rend, ovl.start, ovl.stop) as f64;
+            (ovl_len / aln_len_f) > 0.5
+        }) {
+            continue;
+        }
 
         // Look for:
         // * unbalanced reads bordered by large indels. check secondary alignment
         // * supplementary alignments on same chrom (for now)
         let read_markers = collect_read_markers(&rec, st, end, itree_ignore)?;
-        // TODO: use number of snv as filter
-        let indel_rate_zscore = typ_read_stats.zscore(read_markers.n_indels as f64 / aln_len);
+        let indel_rate_zscore = typ_read_stats.zscore(read_markers.n_indels as f64 / aln_len_f);
         let unbalanced_summary = is_unbalanced_alignment(
             &read_markers.pos,
-            aln_len,
+            aln_len as f64,
             inv_min_num_snvs,
             inv_thr_unbalanced,
         )?;
-        let (rst, rend) = (
-            rec.alignment_start().unwrap().map(|p| p.get())?,
-            rec.alignment_end().unwrap().map(|p| p.get())?,
-        );
+
         let is_unbalanced = unbalanced_summary
             .as_ref()
             .map(|s| s.is_unbalanced)
             .unwrap_or_default();
         if indel_rate_zscore > inv_indel_zscore
-            && aln_len > inv_min_aln_len
+            && aln_len_f > inv_min_aln_len
             && read_markers.n_mismatches >= inv_min_num_snvs
             && is_unbalanced
         {
