@@ -1,5 +1,5 @@
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub struct InversionEvent {
+pub struct MismatchSignal {
     pub chrom: String,
     pub start: usize,
     pub stop: usize,
@@ -9,7 +9,7 @@ pub struct InversionEvent {
     pub is_secondary: bool,
     pub is_unbalanced: bool,
 }
-impl InversionEvent {
+impl MismatchSignal {
     pub fn header() -> &'static str {
         "#chrom\tstart\tstop\tread_name\tn_indels\taln_len\tis_secondary\tis_unbalanced"
     }
@@ -30,7 +30,7 @@ impl InversionEvent {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DeletionEvent {
+pub struct SupplSignal {
     pub chrom: String,
     pub start: usize,
     pub stop: usize,
@@ -38,7 +38,7 @@ pub struct DeletionEvent {
     pub suppl_stop: usize,
     pub rname: String,
 }
-impl DeletionEvent {
+impl SupplSignal {
     pub fn header() -> &'static str {
         "#chrom\tstart\tstop\tread_name\tsuppl_start\tsuppl_stop"
     }
@@ -52,6 +52,7 @@ impl DeletionEvent {
 }
 
 pub enum Event {
-    Deletion(DeletionEvent),
-    Inversion(InversionEvent),
+    Deletion(SupplSignal),
+    Inversion(SupplSignal),
+    InversionInferred(MismatchSignal),
 }

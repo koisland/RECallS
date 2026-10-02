@@ -161,6 +161,13 @@ pub fn calculate_stats_indel_rate(
         }
     }
 
+    // TODO: Write out data to file
+    // for prim_perc_indel in &both_perc_indel[0] {
+    //     println!("{chrom}\tprim\t{prim_perc_indel}")
+    // }
+    // for sec_perc_indel in &both_perc_indel[1] {
+    //     println!("{chrom}\tsec\t{sec_perc_indel}")
+    // }
     let stats_prim_perc_indel = IndelSummaryStats::new(&both_perc_indel[0]);
     let stats_sec_perc_indel = IndelSummaryStats::new(&both_perc_indel[1]);
     Ok((stats_prim_perc_indel, stats_sec_perc_indel))

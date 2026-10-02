@@ -14,7 +14,7 @@ use crate::{
     baseline::aggregate_stats_indel_rate,
     call::detect_events,
     cli::Args,
-    events::{DeletionEvent, Event, InversionEvent},
+    events::{SupplSignal, Event, MismatchSignal},
     io::{
         FastaHandle, aligned_intervals_windows, read_bed, read_indel_read_stats, read_paf,
         write_indel_read_stats, write_itvs_self_similar_paf,
@@ -157,54 +157,57 @@ fn main() -> eyre::Result<()> {
 
     let (read_inv_events, chrom_inv_events, chrom_del_events) = read_events.into_iter().fold(
         (
-            HashMap::<String, Vec<InversionEvent>>::new(),
-            HashMap::<String, Vec<Interval<usize, InversionEvent>>>::new(),
-            HashMap::<String, Vec<Interval<usize, DeletionEvent>>>::new(),
+            HashMap::<String, Vec<MismatchSignal>>::new(),
+            HashMap::<String, Vec<Interval<usize, MismatchSignal>>>::new(),
+            HashMap::<String, Vec<Interval<usize, SupplSignal>>>::new(),
         ),
         |(mut read_inv_events, mut chrom_inv_events, mut chrom_del_events), event| {
             match event {
-                Event::Deletion(deletion_event) => {
+                Event::Deletion(suppl_signal) => {
                     // Add both the main aligned position and the supplementary position
                     let itv_main = Interval {
-                        start: deletion_event.start,
-                        stop: deletion_event.stop,
-                        val: deletion_event.clone(),
+                        start: suppl_signal.start,
+                        stop: suppl_signal.stop,
+                        val: suppl_signal.clone(),
                     };
                     let itv_suppl = Interval {
-                        start: deletion_event.suppl_start,
-                        stop: deletion_event.suppl_stop,
-                        val: deletion_event.clone(),
+                        start: suppl_signal.suppl_start,
+                        stop: suppl_signal.suppl_stop,
+                        val: suppl_signal.clone(),
                     };
-                    if let Some(chrom_events) = chrom_del_events.get_mut(&deletion_event.chrom) {
+                    if let Some(chrom_events) = chrom_del_events.get_mut(&suppl_signal.chrom) {
                         chrom_events.push(itv_main);
                         chrom_events.push(itv_suppl)
                     } else {
                         chrom_del_events
-                            .insert(deletion_event.chrom.to_owned(), vec![itv_main, itv_suppl]);
+                            .insert(suppl_signal.chrom.to_owned(), vec![itv_main, itv_suppl]);
                     }
                 }
-                Event::Inversion(inversion_event) => {
-                    if let Some(read_events) = read_inv_events.get_mut(&inversion_event.rname) {
-                        read_events.push(inversion_event.clone());
+                Event::Inversion(_suppl_signal) => {
+
+                }
+                Event::InversionInferred(mismatch_signal) => {
+                    if let Some(read_events) = read_inv_events.get_mut(&mismatch_signal.rname) {
+                        read_events.push(mismatch_signal.clone());
                     } else {
                         read_inv_events.insert(
-                            inversion_event.rname.to_owned(),
-                            vec![inversion_event.clone()],
+                            mismatch_signal.rname.to_owned(),
+                            vec![mismatch_signal.clone()],
                         );
                     };
-                    if let Some(chrom_events) = chrom_inv_events.get_mut(&inversion_event.chrom) {
+                    if let Some(chrom_events) = chrom_inv_events.get_mut(&mismatch_signal.chrom) {
                         chrom_events.push(Interval {
-                            start: inversion_event.start,
-                            stop: inversion_event.stop,
-                            val: inversion_event,
+                            start: mismatch_signal.start,
+                            stop: mismatch_signal.stop,
+                            val: mismatch_signal,
                         });
                     } else {
                         chrom_inv_events.insert(
-                            inversion_event.chrom.to_owned(),
+                            mismatch_signal.chrom.to_owned(),
                             vec![Interval {
-                                start: inversion_event.start,
-                                stop: inversion_event.stop,
-                                val: inversion_event,
+                                start: mismatch_signal.start,
+                                stop: mismatch_signal.stop,
+                                val: mismatch_signal,
                             }],
                         );
                     }
@@ -219,11 +222,11 @@ fn main() -> eyre::Result<()> {
         .map(|events| events.len())
         .sum::<usize>()
         / 2;
-    let itrees_chrom_inv_events: HashMap<String, Lapper<usize, InversionEvent>> = chrom_inv_events
+    let itrees_chrom_inv_events: HashMap<String, Lapper<usize, MismatchSignal>> = chrom_inv_events
         .into_iter()
         .map(|(chrom, itvs)| (chrom, Lapper::new(itvs)))
         .collect();
-    let itrees_chrom_del_events: HashMap<String, Lapper<usize, DeletionEvent>> = chrom_del_events
+    let itrees_chrom_del_events: HashMap<String, Lapper<usize, SupplSignal>> = chrom_del_events
         .into_iter()
         .map(|(chrom, itvs)| (chrom, Lapper::new(itvs)))
         .collect();
@@ -241,7 +244,7 @@ fn main() -> eyre::Result<()> {
     // Must overlap with another self similar region
     let outfile_inv = output_dir.join("calls_inv.bed");
     let mut outfile_inv_fh = BufWriter::new(File::create(outfile_inv)?);
-    writeln!(&mut outfile_inv_fh, "{}", InversionEvent::header())?;
+    writeln!(&mut outfile_inv_fh, "{}", MismatchSignal::header())?;
 
     for (chrom, itree_inv_events) in itrees_chrom_inv_events.iter() {
         let itree_self_similar = itvs_self_similar
@@ -251,7 +254,9 @@ fn main() -> eyre::Result<()> {
             let itv_len = (itv.stop - itv.start) as f64;
             let all_read_events = &read_inv_events[&itv.val.rname];
             // secondary aln check.
-            if all_read_events.len() < 2 || all_read_events.iter().all(|e| e.is_secondary) {
+            let sec_check = all_read_events.len() < 2 || all_read_events.iter().all(|e| e.is_secondary);
+            let same_chrom = all_read_events.iter().all(|e| e.chrom == *chrom);
+            if sec_check && !same_chrom {
                 continue;
             }
             // self-similar regions in genome to this event
@@ -281,7 +286,7 @@ fn main() -> eyre::Result<()> {
     // Then check overlaps, to be confident require that other end also produces suppl on same side so at least 2 ovl
     let outfile_del = output_dir.join("calls_del.bed");
     let mut outfile_del_fh = BufWriter::new(File::create(outfile_del)?);
-    writeln!(&mut outfile_del_fh, "{}", DeletionEvent::header())?;
+    writeln!(&mut outfile_del_fh, "{}", SupplSignal::header())?;
 
     for itree_del_events in itrees_chrom_del_events.values() {
         for itv in itree_del_events.iter() {

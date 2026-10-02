@@ -18,7 +18,7 @@ use rust_lapper::{Interval, Lapper};
 
 use crate::{
     baseline::ReadIndelSummaryStats,
-    events::{DeletionEvent, Event, InversionEvent},
+    events::{SupplSignal, Event, MismatchSignal},
     self_align::Paf,
     unbalanced_aln::is_unbalanced_alignment,
     utils::overlap_length,
@@ -212,7 +212,7 @@ pub fn detect_events(
             && read_markers.n_mismatches >= inv_min_num_snvs
             && is_unbalanced
         {
-            let event = InversionEvent {
+            let event = MismatchSignal {
                 chrom: chrom.to_owned(),
                 start: rst,
                 stop: rend,
@@ -222,7 +222,7 @@ pub fn detect_events(
                 is_secondary: is_sec,
                 is_unbalanced,
             };
-            events.push(Event::Inversion(event));
+            events.push(Event::InversionInferred(event));
         }
         if is_suppl {
             let Value::String(sa_tag) = rec
@@ -285,7 +285,7 @@ pub fn detect_events(
                     (false, ClipDirection::Left, ClipDirection::Right) => {
                         let n_similar = itree_self_similar.count(sa_start, sa_start+sa_aln_len);
                         if n_similar != 0 {
-                            let event = DeletionEvent {
+                            let event = SupplSignal {
                                 chrom: chrom.to_owned(),
                                 start: rst,
                                 stop: rend,
