@@ -256,7 +256,7 @@ fn main() -> eyre::Result<()> {
             // secondary aln check.
             let sec_check = all_read_events.len() < 2 || all_read_events.iter().all(|e| e.is_secondary);
             let same_chrom = all_read_events.iter().all(|e| e.chrom == *chrom);
-            if sec_check && !same_chrom {
+            if sec_check || !same_chrom {
                 continue;
             }
             // self-similar regions in genome to this event
