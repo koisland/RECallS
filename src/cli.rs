@@ -46,7 +46,7 @@ pub struct Args {
     pub inv_min_aln_len: usize,
 
     /// Inversion indel threshold unbalanced
-    #[arg(long, default_value_t = 0.75)]
+    #[arg(long, default_value_t = 0.5)]
     pub inv_thr_unbalanced: f32,
 
     /// Inversion minimum number of SNVs

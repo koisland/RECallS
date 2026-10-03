@@ -1,9 +1,7 @@
-use std::{collections::HashMap, fs::File, io::BufWriter, path::Path};
+use std::{collections::HashMap, fs::File, io::BufWriter, num::NonZero, path::Path};
 
 use noodles::{
-    bam,
-    core::{Position, Region},
-    sam::alignment::{
+    bam, bgzf, core::{Position, Region}, sam::alignment::{
         RecordBuf, io::Write, record::data::field::Tag, record_buf::data::field::Value,
     },
 };
@@ -20,7 +18,9 @@ pub fn tag_bam(
     let mut fh = bam::io::indexed_reader::Builder::default().build_from_path(bam)?;
     let header = fh.read_header()?;
 
-    let mut fh_out = bam::io::Writer::new(BufWriter::new(File::create(out_bam)?));
+    let dst_file = File::create(out_bam)?;
+    let encoder = bgzf::io::MultithreadedWriter::with_worker_count(NonZero::new(4).unwrap(), dst_file);
+    let mut fh_out = bam::io::Writer::from(encoder);
     let mut new_header = header.clone();
     // new_header.add_comment("@PG     ID:RECallS     PN:RECallS     VN:0.0.1");
     fh_out.write_header(&new_header)?;
@@ -59,7 +59,7 @@ pub fn tag_bam(
                     fh_out.write_alignment_record(&header, &rec_buf)?;
                 }
                 None => {
-                    fh_out.write_record(&header, &rec)?;
+                    // fh_out.write_record(&header, &rec)?;
                 }
             }
         }
