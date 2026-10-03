@@ -14,7 +14,7 @@ use crate::{
     baseline::aggregate_stats_indel_rate,
     call::detect_events,
     cli::Args,
-    events::{SupplSignal, Event, MismatchSignal},
+    events::{Event, MismatchSignal, SupplJuncSignal, SupplSignal},
     io::{
         FastaHandle, aligned_intervals_windows, read_bed, read_indel_read_stats, read_paf,
         write_indel_read_stats, write_itvs_self_similar_paf,
@@ -155,67 +155,93 @@ fn main() -> eyre::Result<()> {
         .flatten()
         .collect();
 
-    let (read_inv_events, chrom_inv_events, chrom_del_events) = read_events.into_iter().fold(
-        (
-            HashMap::<String, Vec<MismatchSignal>>::new(),
-            HashMap::<String, Vec<Interval<usize, MismatchSignal>>>::new(),
-            HashMap::<String, Vec<Interval<usize, SupplSignal>>>::new(),
-        ),
-        |(mut read_inv_events, mut chrom_inv_events, mut chrom_del_events), event| {
-            match event {
-                Event::Deletion(suppl_signal) => {
-                    // Add both the main aligned position and the supplementary position
-                    let itv_main = Interval {
-                        start: suppl_signal.start,
-                        stop: suppl_signal.stop,
-                        val: suppl_signal.clone(),
-                    };
-                    let itv_suppl = Interval {
-                        start: suppl_signal.suppl_start,
-                        stop: suppl_signal.suppl_stop,
-                        val: suppl_signal.clone(),
-                    };
-                    if let Some(chrom_events) = chrom_del_events.get_mut(&suppl_signal.chrom) {
-                        chrom_events.push(itv_main);
-                        chrom_events.push(itv_suppl)
-                    } else {
-                        chrom_del_events
-                            .insert(suppl_signal.chrom.to_owned(), vec![itv_main, itv_suppl]);
+    let (read_inv_events, chrom_inv_events, chrom_inv_junc_events, chrom_del_events) =
+        read_events.into_iter().fold(
+            (
+                HashMap::<String, Vec<MismatchSignal>>::new(),
+                HashMap::<String, Vec<Interval<usize, MismatchSignal>>>::new(),
+                HashMap::<String, Vec<Interval<usize, SupplJuncSignal>>>::new(),
+                HashMap::<String, Vec<Interval<usize, SupplSignal>>>::new(),
+            ),
+            |(
+                mut read_inv_events,
+                mut chrom_inv_events,
+                mut chrom_inv_junc_events,
+                mut chrom_del_events,
+            ),
+             event| {
+                match event {
+                    Event::Deletion(suppl_signal) => {
+                        // Add both the main aligned position and the supplementary position
+                        let itv_main = Interval {
+                            start: suppl_signal.start,
+                            stop: suppl_signal.stop,
+                            val: suppl_signal.clone(),
+                        };
+                        let itv_suppl = Interval {
+                            start: suppl_signal.suppl_start,
+                            stop: suppl_signal.suppl_stop,
+                            val: suppl_signal.clone(),
+                        };
+                        if let Some(chrom_events) = chrom_del_events.get_mut(&suppl_signal.chrom) {
+                            chrom_events.push(itv_main);
+                            chrom_events.push(itv_suppl)
+                        } else {
+                            chrom_del_events
+                                .insert(suppl_signal.chrom.to_owned(), vec![itv_main, itv_suppl]);
+                        }
                     }
-                }
-                Event::Inversion(_suppl_signal) => {
-
-                }
-                Event::InversionInferred(mismatch_signal) => {
-                    if let Some(read_events) = read_inv_events.get_mut(&mismatch_signal.rname) {
-                        read_events.push(mismatch_signal.clone());
-                    } else {
-                        read_inv_events.insert(
-                            mismatch_signal.rname.to_owned(),
-                            vec![mismatch_signal.clone()],
-                        );
-                    };
-                    if let Some(chrom_events) = chrom_inv_events.get_mut(&mismatch_signal.chrom) {
-                        chrom_events.push(Interval {
-                            start: mismatch_signal.start,
-                            stop: mismatch_signal.stop,
-                            val: mismatch_signal,
-                        });
-                    } else {
-                        chrom_inv_events.insert(
-                            mismatch_signal.chrom.to_owned(),
-                            vec![Interval {
+                    Event::Inversion(suppl_junc_signal) => {
+                        let itv = Interval {
+                            start: suppl_junc_signal.start_1,
+                            stop: suppl_junc_signal.start_2,
+                            val: suppl_junc_signal.clone(),
+                        };
+                        if let Some(chrom_events) =
+                            chrom_inv_junc_events.get_mut(&suppl_junc_signal.chrom)
+                        {
+                            chrom_events.push(itv);
+                        } else {
+                            chrom_inv_junc_events
+                                .insert(suppl_junc_signal.chrom.to_owned(), vec![itv]);
+                        }
+                    }
+                    Event::InversionInferred(mismatch_signal) => {
+                        if let Some(read_events) = read_inv_events.get_mut(&mismatch_signal.rname) {
+                            read_events.push(mismatch_signal.clone());
+                        } else {
+                            read_inv_events.insert(
+                                mismatch_signal.rname.to_owned(),
+                                vec![mismatch_signal.clone()],
+                            );
+                        };
+                        if let Some(chrom_events) = chrom_inv_events.get_mut(&mismatch_signal.chrom)
+                        {
+                            chrom_events.push(Interval {
                                 start: mismatch_signal.start,
                                 stop: mismatch_signal.stop,
                                 val: mismatch_signal,
-                            }],
-                        );
+                            });
+                        } else {
+                            chrom_inv_events.insert(
+                                mismatch_signal.chrom.to_owned(),
+                                vec![Interval {
+                                    start: mismatch_signal.start,
+                                    stop: mismatch_signal.stop,
+                                    val: mismatch_signal,
+                                }],
+                            );
+                        }
                     }
                 }
-            }
-            (read_inv_events, chrom_inv_events, chrom_del_events)
-        },
-    );
+                (
+                    read_inv_events,
+                    chrom_inv_events,
+                    chrom_inv_junc_events,
+                    chrom_del_events,
+                )
+            },
+        );
 
     let n_del_events = chrom_del_events
         .values()
@@ -223,6 +249,10 @@ fn main() -> eyre::Result<()> {
         .sum::<usize>()
         / 2;
     let itrees_chrom_inv_events: HashMap<String, Lapper<usize, MismatchSignal>> = chrom_inv_events
+        .into_iter()
+        .map(|(chrom, itvs)| (chrom, Lapper::new(itvs)))
+        .collect();
+    let itrees_chrom_inv_junc_events: HashMap<String, Lapper<usize, SupplJuncSignal>> = chrom_inv_junc_events
         .into_iter()
         .map(|(chrom, itvs)| (chrom, Lapper::new(itvs)))
         .collect();
@@ -254,7 +284,8 @@ fn main() -> eyre::Result<()> {
             let itv_len = (itv.stop - itv.start) as f64;
             let all_read_events = &read_inv_events[&itv.val.rname];
             // secondary aln check.
-            let sec_check = all_read_events.len() < 2 || all_read_events.iter().all(|e| e.is_secondary);
+            let sec_check =
+                all_read_events.len() < 2 || all_read_events.iter().all(|e| e.is_secondary);
             let same_chrom = all_read_events.iter().all(|e| e.chrom == *chrom);
             if sec_check || !same_chrom {
                 continue;
@@ -280,6 +311,15 @@ fn main() -> eyre::Result<()> {
             if n_itvs_self_similar_event > 1 {
                 writeln!(&mut outfile_inv_fh, "{}", itv.val.as_bed())?;
             }
+        }
+    }
+
+    let outfile_inv_junc = output_dir.join("calls_inv_junc.bed");
+    let mut outfile_inv_junc_fh = BufWriter::new(File::create(outfile_inv_junc)?);
+    writeln!(&mut outfile_inv_junc_fh, "{}", SupplJuncSignal::header())?;
+    for itree_inv_junc_events in itrees_chrom_inv_junc_events.values() {
+        for itv in itree_inv_junc_events.iter() {
+                writeln!(&mut outfile_inv_junc_fh, "{}", itv.val.as_bed())?;
         }
     }
 

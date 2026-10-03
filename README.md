@@ -26,6 +26,7 @@ Within the output directory (`-o`):
 recalls
 ├── calls_del.bed
 ├── calls_inv.bed
+├── calls_inv_junc.bed
 ├── chrom_indel_stats.tsv
 └── chrom_self_align.paf
 ```
@@ -34,6 +35,7 @@ Where:
 |name|desc|
 |-|-|
 |calls_del.bed|Putative intrachromosomal deletion event breakpoints|
+|calls_inv_junc.bed|Putative intrachromosomal inversion event breakpoints|
 |calls_inv.bed|Putative intrachromosomal inversion event breakpoints|
 |chrom_indel_stats.tsv|Chromosome read indel stats for primary and secondary alignments|
 |chrom_self_align.paf|PAF file for self-alignment. Uses `minimap2` and params: `-PD -k19 -w19 -m200`|

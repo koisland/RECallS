@@ -18,12 +18,13 @@ use rust_lapper::{Interval, Lapper};
 
 use crate::{
     baseline::ReadIndelSummaryStats,
-    events::{SupplSignal, Event, MismatchSignal},
+    events::{Event, MismatchSignal, SupplJuncSignal, SupplSignal},
     self_align::Paf,
     unbalanced_aln::is_unbalanced_alignment,
     utils::overlap_length,
 };
 
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum ClipDirection {
     Left,
     Right,
@@ -169,11 +170,12 @@ pub fn detect_events(
 
     let indel_read_stats = [&read_stats.primary, &read_stats.secondary];
     let mut events = vec![];
+    let mut sa_itvs = vec![];
 
     for rec in query.records().flatten() {
         let rname = rec.name().unwrap();
         let cg = rec.cigar();
-        let is_suppl = rec.flags().contains(Flags::SUPPLEMENTARY);
+        let is_suppl = rec.data().get(b"SA").is_some();
         let is_sec = rec.flags().contains(Flags::SECONDARY);
         let typ_read_stats = &indel_read_stats[is_sec as usize];
         let aln_len = noodles::sam::alignment::Record::alignment_span(&rec).unwrap()?;
@@ -203,6 +205,7 @@ pub fn detect_events(
             inv_thr_unbalanced,
         )?;
 
+        // Inversion signal based on mismatches
         let is_unbalanced = unbalanced_summary
             .as_ref()
             .map(|s| s.is_unbalanced)
@@ -224,6 +227,7 @@ pub fn detect_events(
             };
             events.push(Event::InversionInferred(event));
         }
+        // Deletion signal based on directional supplementary aln signals
         if is_suppl {
             let Value::String(sa_tag) = rec
                 .data()
@@ -232,10 +236,35 @@ pub fn detect_events(
             else {
                 bail!("Invalid type for SA tag for {rname}.")
             };
+
+            // Store suppl inversion signal intervals
             let clip_direction = get_clip_direction(cg.iter().flatten()).with_context(|| {
                 format!("Read {rname} must have soft/hardclipped operation in cigar: {cg:?}")
             })?;
-
+            match clip_direction {
+                ClipDirection::Left => sa_itvs.push(Interval {
+                    start: rst,
+                    stop: rst + 1,
+                    val: (chrom, clip_direction, String::from_utf8(rname.to_vec())?),
+                }),
+                ClipDirection::Right => sa_itvs.push(Interval {
+                    start: rend,
+                    stop: rend + 1,
+                    val: (chrom, clip_direction, String::from_utf8(rname.to_vec())?),
+                }),
+                ClipDirection::Both => {
+                    sa_itvs.push(Interval {
+                        start: rst,
+                        stop: rst + 1,
+                        val: (chrom, clip_direction, String::from_utf8(rname.to_vec())?),
+                    });
+                    sa_itvs.push(Interval {
+                        start: rend,
+                        stop: rend + 1,
+                        val: (chrom, clip_direction, String::from_utf8(rname.to_vec())?),
+                    })
+                }
+            };
             // minimap2 v2.28 SA tag format
             //
             // chrom,start,strand,cigar,mapq,num_mismatches_gaps
@@ -297,6 +326,36 @@ pub fn detect_events(
                         }
                     }
                 }
+            }
+        }
+    }
+
+    // Inversion supplementary read intersections
+    let itree_suppl_inv = Lapper::new(sa_itvs);
+    for itv_suppl in itree_suppl_inv.iter() {
+        let clip_dir = &itv_suppl.val.1;
+        let rname_1 = &itv_suppl.val.2;
+        for itv_suppl_sec in itree_suppl_inv
+            .find(itv_suppl.start, itv_suppl.stop)
+            .filter(|i| i.val != itv_suppl.val)
+        {
+            let clip_dir_sec = &itv_suppl_sec.val.1;
+            if matches!(
+                (clip_dir, clip_dir_sec),
+                (ClipDirection::Left, ClipDirection::Right)
+                    | (ClipDirection::Right, ClipDirection::Left)
+            ) {
+                let rname_2 = &itv_suppl_sec.val.2;
+                let event = SupplJuncSignal {
+                    chrom: chrom.to_owned(),
+                    start_1: itv_suppl.start,
+                    stop_1: itv_suppl.stop,
+                    rname_1: rname_1.to_owned(),
+                    start_2: itv_suppl_sec.start,
+                    stop_2: itv_suppl_sec.stop,
+                    rname_2: rname_2.to_owned(),
+                };
+                events.push(Event::Inversion(event));
             }
         }
     }
