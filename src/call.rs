@@ -116,7 +116,7 @@ pub fn collect_read_markers(
                 if check_valid_itv(ref_pos, st, end, itree_ignore) {
                     for _ in ref_pos..(ref_pos + l) {
                         n_indels += 1;
-                        marker_qpos.push(qpos as f64);
+                        // marker_qpos.push(qpos as f64);
                     }
                 }
                 qpos += l;
@@ -125,7 +125,7 @@ pub fn collect_read_markers(
                 if check_valid_itv(ref_pos, st, end, itree_ignore) {
                     for _ in ref_pos..(ref_pos + l) {
                         n_indels += 1;
-                        marker_qpos.push(qpos as f64);
+                        // marker_qpos.push(qpos as f64);
                     }
                 }
                 ref_pos += l
