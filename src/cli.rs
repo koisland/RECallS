@@ -42,11 +42,11 @@ pub struct Args {
     pub inv_min_aln_len: usize,
 
     /// Inversion indel threshold unbalanced
-    #[arg(long, default_value_t = 0.5)]
+    #[arg(long, default_value_t = 0.75)]
     pub inv_thr_unbalanced: f32,
 
     /// Inversion minimum number of SNVs
-    #[arg(long, default_value_t = 10)]
+    #[arg(long, default_value_t = 20)]
     pub inv_min_num_snvs: usize,
 
     /// Deletion maximum region divergence between supplementary aligned regions.
