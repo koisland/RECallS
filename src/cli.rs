@@ -21,6 +21,10 @@ pub struct Args {
     #[arg(short, long, default_value = "./recalls")]
     pub output_dir: PathBuf,
 
+    /// Tagged BAM
+    #[arg(short = 'g', long)]
+    pub output_bam: Option<PathBuf>,
+
     /// BED file to ignore
     #[arg[short = 'n', long]]
     pub ignore_bed: Option<PathBuf>,

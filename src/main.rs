@@ -20,6 +20,7 @@ use crate::{
         write_indel_read_stats, write_itvs_self_similar_paf,
     },
     self_align::generate_contig_self_alignment,
+    tag::tag_bam,
     utils::overlap_length,
 };
 
@@ -29,6 +30,7 @@ mod cli;
 mod events;
 mod io;
 mod self_align;
+mod tag;
 mod unbalanced_aln;
 mod utils;
 
@@ -252,10 +254,11 @@ fn main() -> eyre::Result<()> {
         .into_iter()
         .map(|(chrom, itvs)| (chrom, Lapper::new(itvs)))
         .collect();
-    let itrees_chrom_inv_junc_events: HashMap<String, Lapper<usize, SupplJuncSignal>> = chrom_inv_junc_events
-        .into_iter()
-        .map(|(chrom, itvs)| (chrom, Lapper::new(itvs)))
-        .collect();
+    let itrees_chrom_inv_junc_events: HashMap<String, Lapper<usize, SupplJuncSignal>> =
+        chrom_inv_junc_events
+            .into_iter()
+            .map(|(chrom, itvs)| (chrom, Lapper::new(itvs)))
+            .collect();
     let itrees_chrom_del_events: HashMap<String, Lapper<usize, SupplSignal>> = chrom_del_events
         .into_iter()
         .map(|(chrom, itvs)| (chrom, Lapper::new(itvs)))
@@ -268,6 +271,9 @@ fn main() -> eyre::Result<()> {
             .map(|events| events.len())
             .sum::<usize>(),
     );
+
+    let mut final_read_inv_events = HashMap::new();
+    let mut final_read_del_events = HashMap::new();
 
     // Must have more than one event per read (ex. sec and primary)
     // Must have at least one primary alignment
@@ -309,6 +315,11 @@ fn main() -> eyre::Result<()> {
 
             // One for itself
             if n_itvs_self_similar_event > 1 {
+                // Store events to write to bam
+                final_read_inv_events
+                    .entry(itv.val.rname.clone())
+                    .and_modify(|events: &mut Vec<MismatchSignal>| events.push(itv.val.clone()))
+                    .or_insert_with(|| vec![itv.val.clone()]);
                 writeln!(&mut outfile_inv_fh, "{}", itv.val.as_bed())?;
             }
         }
@@ -319,7 +330,7 @@ fn main() -> eyre::Result<()> {
     writeln!(&mut outfile_inv_junc_fh, "{}", SupplJuncSignal::header())?;
     for itree_inv_junc_events in itrees_chrom_inv_junc_events.values() {
         for itv in itree_inv_junc_events.iter() {
-                writeln!(&mut outfile_inv_junc_fh, "{}", itv.val.as_bed())?;
+            writeln!(&mut outfile_inv_junc_fh, "{}", itv.val.as_bed())?;
         }
     }
 
@@ -332,9 +343,25 @@ fn main() -> eyre::Result<()> {
         for itv in itree_del_events.iter() {
             let ovl_cnt = itree_del_events.count(itv.start, itv.stop);
             if ovl_cnt >= args.del_min_ovl_cnt {
+                // Store events to write to bam
+                final_read_del_events
+                    .entry(itv.val.rname.clone())
+                    .and_modify(|events: &mut Vec<SupplSignal>| events.push(itv.val.clone()))
+                    .or_insert_with(|| vec![itv.val.clone()]);
                 writeln!(&mut outfile_del_fh, "{}", itv.val.as_bed())?;
             }
         }
+    }
+
+    if let Some(out_bam) = args.output_bam {
+        eprintln!("Generating tagged BAM.",);
+        tag_bam(
+            &args.bam,
+            &out_bam,
+            &final_read_inv_events,
+            &final_read_del_events,
+        )?;
+        // bam::fs::index(out_bam)?;
     }
 
     eprintln!("Done!");
