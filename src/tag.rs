@@ -1,8 +1,8 @@
-use std::{collections::HashMap, fs::File, io::BufWriter, num::NonZero, path::Path};
+use std::{collections::HashMap, fs::File, num::NonZero, path::Path};
 
 use noodles::{
     bam, bgzf, core::{Position, Region}, sam::alignment::{
-        RecordBuf, io::Write, record::data::field::Tag, record_buf::data::field::Value,
+        Record, RecordBuf, io::Write, record::data::field::Tag, record_buf::data::field::Value,
     },
 };
 // use rust_lapper::Interval;
@@ -21,10 +21,9 @@ pub fn tag_bam(
     let dst_file = File::create(out_bam)?;
     let encoder = bgzf::io::MultithreadedWriter::with_worker_count(NonZero::new(4).unwrap(), dst_file);
     let mut fh_out = bam::io::Writer::from(encoder);
-    let mut new_header = header.clone();
-    // new_header.add_comment("@PG     ID:RECallS     PN:RECallS     VN:0.0.1");
-    fh_out.write_header(&new_header)?;
+    fh_out.write_header(&header)?;
 
+    // TODO: Parallelize
     for region in header
         .reference_sequences()
         .into_iter()
@@ -39,13 +38,13 @@ pub fn tag_bam(
         let query = fh.query(&header, &region)?;
         for rec in query.records().flatten() {
             let rname = str::from_utf8(rec.name().unwrap())?;
-            // let (rst, rend) = (
-            //     rec.alignment_start().unwrap().map(|p| p.get())?,
-            //     rec.alignment_end().unwrap().map(|p| p.get())?,
-            // );
-            let tag_value = if inv_events.contains_key(rname) {
+            let (rst, rend) = (
+                rec.alignment_start().unwrap().map(|p| p.get())?,
+                rec.alignment_end().unwrap().map(|p| p.get())?,
+            );
+            let tag_value = if inv_events.get(rname).map(|e| e.iter().find(|e| e.start == rst && e.stop == rend )).is_some() {
                 Some("inv")
-            } else if del_events.contains_key(rname) {
+            } else if del_events.get(rname).map(|e| e.iter().find(|e| e.start == rst && e.stop == rend )).is_some() {
                 Some("del")
             } else {
                 None
@@ -64,5 +63,13 @@ pub fn tag_bam(
             }
         }
     }
+
+    // Create bam index
+    std::mem::drop(fh_out);
+    let index = bam::fs::index(bam)?;
+    let mut bai = bam.to_path_buf();
+    bai.add_extension("bai");
+    bam::bai::fs::write(bai, &index)?;
+
     Ok(())
 }

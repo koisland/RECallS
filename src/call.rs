@@ -322,6 +322,7 @@ pub fn detect_events(
                                 suppl_stop: sa_end,
                                 rname: String::from_utf8(rname.to_vec())?,
                             };
+                            // TODO: Dedup due to two suppl alns
                             events.push(Event::Deletion(event));
                         }
                     }
