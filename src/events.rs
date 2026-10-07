@@ -1,3 +1,9 @@
+
+pub enum Signal {
+    SupplSignal(SupplSignal),
+    MismatchSignal(MismatchSignal)
+}
+
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct MismatchSignal {
     pub chrom: String,
@@ -29,34 +35,6 @@ impl MismatchSignal {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SupplJuncSignal {
-    pub chrom: String,
-    pub start_1: usize,
-    pub stop_1: usize,
-    pub rname_1: String,
-    pub start_2: usize,
-    pub stop_2: usize,
-    pub rname_2: String,
-}
-impl SupplJuncSignal {
-    pub fn header() -> &'static str {
-        "#chrom\tstart\tstop\tread_name\tstart_2\tstop_2\tread_name_2"
-    }
-
-    pub fn as_bed(&self) -> String {
-        format!(
-            "{}\t{}\t{}\t{}\t{}\t{}\t{}",
-            self.chrom,
-            self.start_1,
-            self.stop_1,
-            self.rname_1,
-            self.start_2,
-            self.stop_2,
-            self.rname_2
-        )
-    }
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SupplSignal {
@@ -80,8 +58,22 @@ impl SupplSignal {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SVType {
+    Deletion,
+    Inversion
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SV {
+    pub chrom: String,
+    pub start: usize,
+    pub stop: usize,
+    pub reads: Vec<String>,
+    pub typ: SVType
+}
+
 pub enum Event {
-    Deletion(SupplSignal),
-    Inversion(SupplJuncSignal),
-    InversionInferred(MismatchSignal),
+    SV(SV),
+    Signal(Signal)
 }

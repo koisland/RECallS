@@ -173,68 +173,70 @@ fn main() -> eyre::Result<()> {
             ),
              event| {
                 match event {
-                    Event::Deletion(suppl_signal) => {
-                        // Add both the main aligned position and the supplementary position
-                        let itv_main = Interval {
-                            start: suppl_signal.start,
-                            stop: suppl_signal.stop,
-                            val: suppl_signal.clone(),
-                        };
-                        let itv_suppl = Interval {
-                            start: suppl_signal.suppl_start,
-                            stop: suppl_signal.suppl_stop,
-                            val: suppl_signal.clone(),
-                        };
-                        if let Some(chrom_events) = chrom_del_events.get_mut(&suppl_signal.chrom) {
-                            chrom_events.push(itv_main);
-                            chrom_events.push(itv_suppl)
-                        } else {
-                            chrom_del_events
-                                .insert(suppl_signal.chrom.to_owned(), vec![itv_main, itv_suppl]);
-                        }
-                    }
-                    Event::Inversion(suppl_junc_signal) => {
-                        let itv = Interval {
-                            start: suppl_junc_signal.start_1,
-                            stop: suppl_junc_signal.start_2,
-                            val: suppl_junc_signal.clone(),
-                        };
-                        if let Some(chrom_events) =
-                            chrom_inv_junc_events.get_mut(&suppl_junc_signal.chrom)
-                        {
-                            chrom_events.push(itv);
-                        } else {
-                            chrom_inv_junc_events
-                                .insert(suppl_junc_signal.chrom.to_owned(), vec![itv]);
-                        }
-                    }
-                    Event::InversionInferred(mismatch_signal) => {
-                        if let Some(read_events) = read_inv_events.get_mut(&mismatch_signal.rname) {
-                            read_events.push(mismatch_signal.clone());
-                        } else {
-                            read_inv_events.insert(
-                                mismatch_signal.rname.to_owned(),
-                                vec![mismatch_signal.clone()],
-                            );
-                        };
-                        if let Some(chrom_events) = chrom_inv_events.get_mut(&mismatch_signal.chrom)
-                        {
-                            chrom_events.push(Interval {
-                                start: mismatch_signal.start,
-                                stop: mismatch_signal.stop,
-                                val: mismatch_signal,
-                            });
-                        } else {
-                            chrom_inv_events.insert(
-                                mismatch_signal.chrom.to_owned(),
-                                vec![Interval {
-                                    start: mismatch_signal.start,
-                                    stop: mismatch_signal.stop,
-                                    val: mismatch_signal,
-                                }],
-                            );
-                        }
-                    }
+                    // Event::Deletion(suppl_signal) => {
+                    //     // Add both the main aligned position and the supplementary position
+                    //     let itv_main = Interval {
+                    //         start: suppl_signal.start,
+                    //         stop: suppl_signal.stop,
+                    //         val: suppl_signal.clone(),
+                    //     };
+                    //     let itv_suppl = Interval {
+                    //         start: suppl_signal.suppl_start,
+                    //         stop: suppl_signal.suppl_stop,
+                    //         val: suppl_signal.clone(),
+                    //     };
+                    //     if let Some(chrom_events) = chrom_del_events.get_mut(&suppl_signal.chrom) {
+                    //         chrom_events.push(itv_main);
+                    //         chrom_events.push(itv_suppl)
+                    //     } else {
+                    //         chrom_del_events
+                    //             .insert(suppl_signal.chrom.to_owned(), vec![itv_main, itv_suppl]);
+                    //     }
+                    // }
+                    // Event::Inversion(suppl_junc_signal) => {
+                    //     let itv = Interval {
+                    //         start: suppl_junc_signal.start_1,
+                    //         stop: suppl_junc_signal.start_2,
+                    //         val: suppl_junc_signal.clone(),
+                    //     };
+                    //     if let Some(chrom_events) =
+                    //         chrom_inv_junc_events.get_mut(&suppl_junc_signal.chrom)
+                    //     {
+                    //         chrom_events.push(itv);
+                    //     } else {
+                    //         chrom_inv_junc_events
+                    //             .insert(suppl_junc_signal.chrom.to_owned(), vec![itv]);
+                    //     }
+                    // }
+                    // Event::InversionInferred(mismatch_signal) => {
+                    //     if let Some(read_events) = read_inv_events.get_mut(&mismatch_signal.rname) {
+                    //         read_events.push(mismatch_signal.clone());
+                    //     } else {
+                    //         read_inv_events.insert(
+                    //             mismatch_signal.rname.to_owned(),
+                    //             vec![mismatch_signal.clone()],
+                    //         );
+                    //     };
+                    //     if let Some(chrom_events) = chrom_inv_events.get_mut(&mismatch_signal.chrom)
+                    //     {
+                    //         chrom_events.push(Interval {
+                    //             start: mismatch_signal.start,
+                    //             stop: mismatch_signal.stop,
+                    //             val: mismatch_signal,
+                    //         });
+                    //     } else {
+                    //         chrom_inv_events.insert(
+                    //             mismatch_signal.chrom.to_owned(),
+                    //             vec![Interval {
+                    //                 start: mismatch_signal.start,
+                    //                 stop: mismatch_signal.stop,
+                    //                 val: mismatch_signal,
+                    //             }],
+                    //         );
+                    //     }
+                    // }
+                    Event::SV(sv) => todo!(),
+                    Event::Signal(signal) => todo!(),
                 }
                 (
                     read_inv_events,

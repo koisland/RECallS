@@ -17,11 +17,7 @@ use noodles::{
 use rust_lapper::{Interval, Lapper};
 
 use crate::{
-    baseline::ReadIndelSummaryStats,
-    events::{Event, MismatchSignal, SupplJuncSignal, SupplSignal},
-    self_align::Paf,
-    unbalanced_aln::is_unbalanced_alignment,
-    utils::overlap_length,
+    baseline::ReadIndelSummaryStats, events::{Event, MismatchSignal, Signal, SupplJuncSignal, SupplSignal}, self_align::Paf, unbalanced_aln::is_unbalanced_alignment, utils::overlap_length,
 };
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -143,6 +139,26 @@ pub fn collect_read_markers(
     })
 }
 
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SupplIntervalSignals {
+    pub chrom: String,
+    pub itv: Interval<usize, ClipDirection>,
+    pub suppl_itv: Interval<usize, ClipDirection>,
+    pub read: String,
+}
+
+impl SupplIntervalSignals {
+    pub fn new(
+        chrom: String,
+        itv: Interval<usize, ClipDirection>,
+        suppl_itv: Interval<usize, ClipDirection>,
+        read: String,
+    ) -> Self {
+        SupplIntervalSignals { chrom, itv, suppl_itv, read }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn detect_events(
     bam: &Path,
@@ -225,7 +241,7 @@ pub fn detect_events(
                 is_secondary: is_sec,
                 is_unbalanced,
             };
-            events.push(Event::InversionInferred(event));
+            events.push(Event::Signal(Signal::MismatchSignal(event)));
         }
         // Deletion signal based on directional supplementary aln signals
         if is_suppl {
@@ -241,30 +257,6 @@ pub fn detect_events(
             let clip_direction = get_clip_direction(cg.iter().flatten()).with_context(|| {
                 format!("Read {rname} must have soft/hardclipped operation in cigar: {cg:?}")
             })?;
-            match clip_direction {
-                ClipDirection::Left => sa_itvs.push(Interval {
-                    start: rst,
-                    stop: rst + 1,
-                    val: (chrom, clip_direction, String::from_utf8(rname.to_vec())?),
-                }),
-                ClipDirection::Right => sa_itvs.push(Interval {
-                    start: rend,
-                    stop: rend + 1,
-                    val: (chrom, clip_direction, String::from_utf8(rname.to_vec())?),
-                }),
-                ClipDirection::Both => {
-                    sa_itvs.push(Interval {
-                        start: rst,
-                        stop: rst + 1,
-                        val: (chrom, clip_direction, String::from_utf8(rname.to_vec())?),
-                    });
-                    sa_itvs.push(Interval {
-                        start: rend,
-                        stop: rend + 1,
-                        val: (chrom, clip_direction, String::from_utf8(rname.to_vec())?),
-                    })
-                }
-            };
             // minimap2 v2.28 SA tag format
             //
             // chrom,start,strand,cigar,mapq,num_mismatches_gaps
@@ -286,11 +278,59 @@ pub fn detect_events(
                     continue;
                 }
 
-                // What is the order of the current alignment relative to the suppl alignment?
-                let sa_upstream = sa_start > rend;
-
                 let sa_clip_direction = get_clip_direction(sa_cigar.iter().flatten())
                     .with_context(|| format!("Read {rname} must have soft/hardclipped operation in SA cigar: {sa_cigar:?}"))?;
+
+                match clip_direction {
+                    // |<  |
+                    ClipDirection::Left => sa_itvs.push(Interval {
+                        start: rst,
+                        stop: rst + 1,
+                        val: SupplIntervalSignals::new(
+                            chrom.to_owned(),
+                            Interval { start: rst, stop: rend, val: clip_direction},
+                            Interval { start: sa_start, stop: sa_end, val: sa_clip_direction},
+                            String::from_utf8(rname.to_vec())?
+                        ),
+                    }),
+                    // |  >|
+                    ClipDirection::Right => sa_itvs.push(Interval {
+                        start: rend,
+                        stop: rend + 1,
+                        val: SupplIntervalSignals::new(
+                            chrom.to_owned(),
+                            Interval { start: rst, stop: rend, val: clip_direction},
+                            Interval { start: sa_start, stop: sa_end, val: sa_clip_direction},
+                            String::from_utf8(rname.to_vec())?
+                        ),
+                    }),
+                    // |< >|
+                    ClipDirection::Both => {
+                        sa_itvs.push(Interval {
+                            start: rst,
+                            stop: rst + 1,
+                            val: SupplIntervalSignals::new(
+                                chrom.to_owned(),
+                                Interval { start: rst, stop: rend, val: clip_direction},
+                                Interval { start: sa_start, stop: sa_end, val: sa_clip_direction},
+                                String::from_utf8(rname.to_vec())?
+                            ),
+                        });
+                        sa_itvs.push(Interval {
+                            start: rend,
+                            stop: rend + 1,
+                            val: SupplIntervalSignals::new(
+                                chrom.to_owned(),
+                                Interval { start: rst, stop: rend, val: clip_direction},
+                                Interval { start: sa_start, stop: sa_end, val: sa_clip_direction},
+                                String::from_utf8(rname.to_vec())?
+                            ),
+                        })
+                    }
+                };
+
+                // What is the order of the current alignment relative to the suppl alignment?
+                let sa_upstream = sa_start > rend;
 
                 match (sa_upstream, &clip_direction, sa_clip_direction) {
                     // Invalid
@@ -333,32 +373,76 @@ pub fn detect_events(
 
     // Inversion supplementary read intersections
     let itree_suppl_inv = Lapper::new(sa_itvs);
-    for itv_suppl in itree_suppl_inv.iter() {
-        let clip_dir = &itv_suppl.val.1;
-        let rname_1 = &itv_suppl.val.2;
-        for itv_suppl_sec in itree_suppl_inv
-            .find(itv_suppl.start, itv_suppl.stop)
-            .filter(|i| i.val != itv_suppl.val)
-        {
-            let clip_dir_sec = &itv_suppl_sec.val.1;
-            if matches!(
-                (clip_dir, clip_dir_sec),
-                (ClipDirection::Left, ClipDirection::Right)
-                    | (ClipDirection::Right, ClipDirection::Left)
-            ) {
-                let rname_2 = &itv_suppl_sec.val.2;
-                let event = SupplJuncSignal {
-                    chrom: chrom.to_owned(),
-                    start_1: itv_suppl.start,
-                    stop_1: itv_suppl.stop,
-                    rname_1: rname_1.to_owned(),
-                    start_2: itv_suppl_sec.start,
-                    stop_2: itv_suppl_sec.stop,
-                    rname_2: rname_2.to_owned(),
-                };
-                events.push(Event::Inversion(event));
-            }
+    for itv in itree_suppl_inv.iter() {
+        let ovl_itvs = itree_suppl_inv
+            .find(itv.start, itv.stop)
+            // Omit self
+            .filter(|oitv| oitv.val != itv.val)
+            // Each overlapping interval should also overlap with its supplementary itv
+            // And should be different reads
+            .filter(|oitv| {
+                itv.val.suppl_itv.overlap(itv.val.suppl_itv.start, itv.val.suppl_itv.stop) && itv.val.read != oitv.val.read
+            })
+            .collect_vec();
+
+        if ovl_itvs.is_empty() {
+            continue;
         }
+        if ovl_itvs.len() > 2 {
+            eprintln!("More overlaps than expected for itv: {itv:?}");
+            eprintln!("{ovl_itvs:#?}");
+            continue;
+        }
+
+        let all_contained = ovl_itvs.iter().all(|itv|
+            itv.overlap(itv.val.itv.start, itv.val.itv.stop) && itv.overlap(itv.val.suppl_itv.start, itv.val.suppl_itv.stop)
+        );
+        // If all contained in this window, means we're done
+        // SupplJuncSignal
+        if all_contained {
+            let (itv_1, itv_2) = (ovl_itvs[0], ovl_itvs[1]);
+
+            // For inversion, expect both ends to be in same clipping direction
+            // |x >|              |< *|
+            //     |< *|      |x >|
+            // For deletion, ends will be in opposing directions.
+            // |x >|      |< *|
+            // |* >|      |< x|
+            // If not one of these, omit.
+            // We also do this check again if not contained in a given window
+
+        } else {
+            // Otherwise pass
+            // SupplSignal
+        }
+        eprintln!("{:?}-{}", (itv.start, itv.stop), ovl_itvs.len());
+        eprintln!("({st},{end})-{:#?}", ovl_itvs);
+
+
+
+        // for itv_suppl_sec in itree_suppl_inv
+        //     .find(itv_suppl.start, itv_suppl.stop)
+        //     .filter(|i| i.val != itv_suppl.val)
+        // {
+        //     let clip_dir_sec = &itv_suppl_sec.val.3;
+        //     if matches!(
+        //         (clip_dir, clip_dir_sec),
+        //         (ClipDirection::Left, ClipDirection::Right)
+        //             | (ClipDirection::Right, ClipDirection::Left)
+        //     ) {
+        //         let rname_2 = &itv_suppl_sec.val.4;
+        //         let event = SupplJuncSignal {
+        //             chrom: chrom.to_owned(),
+        //             start_1: itv_suppl.val.1.start,
+        //             stop_1: itv_suppl.val.1.stop,
+        //             rname_1: rname_1.to_owned(),
+        //             start_2: itv_suppl_sec.val.1.start,
+        //             stop_2: itv_suppl_sec.val.2.stop,
+        //             rname_2: rname_2.to_owned(),
+        //         };
+        //         events.push(Event::Inversion(event));
+        //     }
+        // }
     }
 
     Ok(events)

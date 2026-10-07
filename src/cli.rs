@@ -7,11 +7,13 @@ use clap::Parser;
 #[command(version, about, long_about = None)]
 pub struct Args {
     /// DSA read alignment
-    #[arg(short = 'i', long)]
+    // #[arg(short = 'i', long)]
+    #[arg(short = 'i', long, default_value = "test/amplicon/chm13_chr7_sim.bam")]
     pub bam: PathBuf,
 
     /// Genome assembly
-    #[arg(short, long)]
+    // #[arg(short, long)]
+    #[arg(short, long, default_value = "test/amplicon/chm13_chr7.fa.gz")]
     pub fa: PathBuf,
 
     /// BED file to restrict search
@@ -26,7 +28,8 @@ pub struct Args {
     pub output_bam: Option<PathBuf>,
 
     /// BED file to ignore
-    #[arg[short = 'n', long]]
+    // #[arg[short = 'n', long]]
+    #[arg[short = 'n', long, default_value = "test/amplicon/chm13_chr7_lcr.bed"]]
     pub ignore_bed: Option<PathBuf>,
 
     /// Number of threads
