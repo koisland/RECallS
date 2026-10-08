@@ -17,8 +17,14 @@ use noodles::{
 use rust_lapper::{Interval, Lapper};
 
 use crate::{
-    baseline::ReadIndelSummaryStats, events::{Event, MismatchSignal, Signal, SupplJuncSignal, SupplSignal}, self_align::Paf, unbalanced_aln::is_unbalanced_alignment, utils::overlap_length,
+    baseline::ReadIndelSummaryStats,
+    events::{Event, MismatchSignal, SV, SVType, Signal},
+    self_align::Paf,
+    unbalanced_aln::is_unbalanced_alignment,
+    utils::overlap_length,
 };
+
+const CLIP_OVL_DST: usize = 2000;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum ClipDirection {
@@ -139,7 +145,6 @@ pub fn collect_read_markers(
     })
 }
 
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SupplIntervalSignals {
     pub chrom: String,
@@ -155,8 +160,103 @@ impl SupplIntervalSignals {
         suppl_itv: Interval<usize, ClipDirection>,
         read: String,
     ) -> Self {
-        SupplIntervalSignals { chrom, itv, suppl_itv, read }
+        SupplIntervalSignals {
+            chrom,
+            itv,
+            suppl_itv,
+            read,
+        }
     }
+
+    pub fn breakpoints(&self) -> (usize, usize) {
+        match (self.itv.val, self.suppl_itv.val) {
+            (ClipDirection::Left, ClipDirection::Left)
+            | (ClipDirection::Left, ClipDirection::Both) => (
+                std::cmp::min(self.itv.start, self.suppl_itv.start),
+                std::cmp::max(self.itv.start, self.suppl_itv.start),
+            ),
+            (ClipDirection::Left, ClipDirection::Right) => (
+                std::cmp::min(self.itv.start, self.suppl_itv.stop),
+                std::cmp::max(self.itv.start, self.suppl_itv.stop),
+            ),
+            (ClipDirection::Right, ClipDirection::Left)
+            | (ClipDirection::Right, ClipDirection::Both)
+            | (ClipDirection::Both, ClipDirection::Left)
+            | (ClipDirection::Both, ClipDirection::Both) => (
+                std::cmp::min(self.itv.stop, self.suppl_itv.start),
+                std::cmp::max(self.itv.stop, self.suppl_itv.start),
+            ),
+            (ClipDirection::Right, ClipDirection::Right)
+            | (ClipDirection::Both, ClipDirection::Right) => (
+                std::cmp::min(self.itv.stop, self.suppl_itv.stop),
+                std::cmp::max(self.itv.stop, self.suppl_itv.stop),
+            ),
+        }
+    }
+    // if both, take the minimal distance
+    pub fn span(&self) -> Interval<usize, usize> {
+        let (start, stop) = self.breakpoints();
+        let span = start.saturating_sub(stop);
+        Interval {
+            start,
+            stop,
+            val: span,
+        }
+    }
+}
+
+// For inversion, expect both ends to be in same clipping direction
+// |x >|              |< *|
+//     |< *|      |x >|
+// For deletion, ends will be in opposing directions.
+// |x >|      |< *|
+// |* >|      |< x|
+// If not one of these, omit.
+fn assign_type_by_clip_direction(
+    itv: &Interval<usize, ClipDirection>,
+    suppl_itv: &Interval<usize, ClipDirection>,
+) -> Option<SVType> {
+    // What is the order of the current alignment relative to the suppl alignment?
+    let sa_upstream = suppl_itv.start > itv.stop;
+
+    match (sa_upstream, &itv.val, &suppl_itv.val) {
+            (_, ClipDirection::Left, ClipDirection::Left) |
+            (_, ClipDirection::Right, ClipDirection::Right) => {
+                Some(SVType::Inversion)
+            },
+            // Invalid
+            (_, ClipDirection::Both, _) |
+            (_, _, ClipDirection::Both) |
+            //       *
+            // |<  | |  >|
+            (true, ClipDirection::Left, ClipDirection::Right) |
+            // *     
+            // |<  | |  >|
+            (false, ClipDirection::Right, ClipDirection::Left) => {
+                None
+            },
+            //       *
+            // |  >| |<  |
+            // *     
+            // |  >| |<  |
+            (true, ClipDirection::Right, ClipDirection::Left) |
+            (false, ClipDirection::Left, ClipDirection::Right) => {
+                // let n_similar = itree_self_similar.count(sa_start, sa_start+sa_aln_len);
+                // if n_similar != 0 {
+                //     let event = SupplSignal {
+                //         chrom: chrom.to_owned(),
+                //         start: rst,
+                //         stop: rend,
+                //         suppl_start: sa_start,
+                //         suppl_stop: sa_end,
+                //         rname: String::from_utf8(rname.to_vec())?,
+                //     };
+                //     // TODO: Dedup due to two suppl alns
+                //     events.push(Event::Deletion(event));
+                // }
+                Some(SVType::Deletion)
+            }
+        }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -189,7 +289,7 @@ pub fn detect_events(
     let mut sa_itvs = vec![];
 
     for rec in query.records().flatten() {
-        let rname = rec.name().unwrap();
+        let read = rec.name().unwrap();
         let cg = rec.cigar();
         let is_suppl = rec.data().get(b"SA").is_some();
         let is_sec = rec.flags().contains(Flags::SECONDARY);
@@ -232,10 +332,12 @@ pub fn detect_events(
             && is_unbalanced
         {
             let event = MismatchSignal {
-                chrom: chrom.to_owned(),
-                start: rst,
-                stop: rend,
-                rname: String::from_utf8(rname.to_vec())?,
+                itv: Interval {
+                    start: rst,
+                    stop: rend,
+                    val: chrom.to_owned(),
+                },
+                read: String::from_utf8(read.to_vec())?,
                 n_indels: read_markers.n_indels,
                 aln_len,
                 is_secondary: is_sec,
@@ -248,14 +350,14 @@ pub fn detect_events(
             let Value::String(sa_tag) = rec
                 .data()
                 .get(b"SA")
-                .with_context(|| format!("Must have SA tag for {rname}."))??
+                .with_context(|| format!("Must have SA tag for {read}."))??
             else {
-                bail!("Invalid type for SA tag for {rname}.")
+                bail!("Invalid type for SA tag for {read}.")
             };
 
             // Store suppl inversion signal intervals
             let clip_direction = get_clip_direction(cg.iter().flatten()).with_context(|| {
-                format!("Read {rname} must have soft/hardclipped operation in cigar: {cg:?}")
+                format!("Read {read} must have soft/hardclipped operation in cigar: {cg:?}")
             })?;
             // minimap2 v2.28 SA tag format
             //
@@ -279,109 +381,105 @@ pub fn detect_events(
                 }
 
                 let sa_clip_direction = get_clip_direction(sa_cigar.iter().flatten())
-                    .with_context(|| format!("Read {rname} must have soft/hardclipped operation in SA cigar: {sa_cigar:?}"))?;
+                    .with_context(|| format!("Read {read} must have soft/hardclipped operation in SA cigar: {sa_cigar:?}"))?;
 
                 match clip_direction {
                     // |<  |
                     ClipDirection::Left => sa_itvs.push(Interval {
-                        start: rst,
-                        stop: rst + 1,
+                        start: rst.saturating_sub(CLIP_OVL_DST),
+                        stop: rst + CLIP_OVL_DST,
                         val: SupplIntervalSignals::new(
                             chrom.to_owned(),
-                            Interval { start: rst, stop: rend, val: clip_direction},
-                            Interval { start: sa_start, stop: sa_end, val: sa_clip_direction},
-                            String::from_utf8(rname.to_vec())?
+                            Interval {
+                                start: rst,
+                                stop: rend,
+                                val: clip_direction,
+                            },
+                            Interval {
+                                start: sa_start,
+                                stop: sa_end,
+                                val: sa_clip_direction,
+                            },
+                            String::from_utf8(read.to_vec())?,
                         ),
                     }),
                     // |  >|
                     ClipDirection::Right => sa_itvs.push(Interval {
-                        start: rend,
-                        stop: rend + 1,
+                        start: rend.saturating_sub(CLIP_OVL_DST),
+                        stop: rend + CLIP_OVL_DST,
                         val: SupplIntervalSignals::new(
                             chrom.to_owned(),
-                            Interval { start: rst, stop: rend, val: clip_direction},
-                            Interval { start: sa_start, stop: sa_end, val: sa_clip_direction},
-                            String::from_utf8(rname.to_vec())?
+                            Interval {
+                                start: rst,
+                                stop: rend,
+                                val: clip_direction,
+                            },
+                            Interval {
+                                start: sa_start,
+                                stop: sa_end,
+                                val: sa_clip_direction,
+                            },
+                            String::from_utf8(read.to_vec())?,
                         ),
                     }),
                     // |< >|
                     ClipDirection::Both => {
                         sa_itvs.push(Interval {
-                            start: rst,
-                            stop: rst + 1,
+                            start: rst.saturating_sub(CLIP_OVL_DST),
+                            stop: rst + CLIP_OVL_DST,
                             val: SupplIntervalSignals::new(
                                 chrom.to_owned(),
-                                Interval { start: rst, stop: rend, val: clip_direction},
-                                Interval { start: sa_start, stop: sa_end, val: sa_clip_direction},
-                                String::from_utf8(rname.to_vec())?
+                                Interval {
+                                    start: rst,
+                                    stop: rend,
+                                    val: clip_direction,
+                                },
+                                Interval {
+                                    start: sa_start,
+                                    stop: sa_end,
+                                    val: sa_clip_direction,
+                                },
+                                String::from_utf8(read.to_vec())?,
                             ),
                         });
                         sa_itvs.push(Interval {
-                            start: rend,
-                            stop: rend + 1,
+                            start: rend.saturating_sub(CLIP_OVL_DST),
+                            stop: rend + CLIP_OVL_DST,
                             val: SupplIntervalSignals::new(
                                 chrom.to_owned(),
-                                Interval { start: rst, stop: rend, val: clip_direction},
-                                Interval { start: sa_start, stop: sa_end, val: sa_clip_direction},
-                                String::from_utf8(rname.to_vec())?
+                                Interval {
+                                    start: rst,
+                                    stop: rend,
+                                    val: clip_direction,
+                                },
+                                Interval {
+                                    start: sa_start,
+                                    stop: sa_end,
+                                    val: sa_clip_direction,
+                                },
+                                String::from_utf8(read.to_vec())?,
                             ),
                         })
                     }
                 };
-
-                // What is the order of the current alignment relative to the suppl alignment?
-                let sa_upstream = sa_start > rend;
-
-                match (sa_upstream, &clip_direction, sa_clip_direction) {
-                    // Invalid
-                    (_, ClipDirection::Left, ClipDirection::Left) |
-                    (_, ClipDirection::Right, ClipDirection::Right) |
-                    (_, ClipDirection::Both, _) |
-                    (_, _, ClipDirection::Both) |
-                    //       *
-                    // |<  | |  >|
-                    (true, ClipDirection::Left, ClipDirection::Right) |
-                    // *     
-                    // |<  | |  >|
-                    (false, ClipDirection::Right, ClipDirection::Left) => {
-                        continue;
-                    },
-                    //       *
-                    // |  >| |<  |
-                    // *     
-                    // |  >| |<  |
-                    (true, ClipDirection::Right, ClipDirection::Left) |
-                    (false, ClipDirection::Left, ClipDirection::Right) => {
-                        let n_similar = itree_self_similar.count(sa_start, sa_start+sa_aln_len);
-                        if n_similar != 0 {
-                            let event = SupplSignal {
-                                chrom: chrom.to_owned(),
-                                start: rst,
-                                stop: rend,
-                                suppl_start: sa_start,
-                                suppl_stop: sa_end,
-                                rname: String::from_utf8(rname.to_vec())?,
-                            };
-                            // TODO: Dedup due to two suppl alns
-                            events.push(Event::Deletion(event));
-                        }
-                    }
-                }
             }
         }
     }
 
     // Inversion supplementary read intersections
     let itree_suppl_inv = Lapper::new(sa_itvs);
-    for itv in itree_suppl_inv.iter() {
+    for sitv in itree_suppl_inv.iter() {
         let ovl_itvs = itree_suppl_inv
-            .find(itv.start, itv.stop)
+            .find(sitv.start, sitv.stop)
             // Omit self
-            .filter(|oitv| oitv.val != itv.val)
+            .filter(|oitv| oitv.val != sitv.val)
             // Each overlapping interval should also overlap with its supplementary itv
             // And should be different reads
             .filter(|oitv| {
-                itv.val.suppl_itv.overlap(itv.val.suppl_itv.start, itv.val.suppl_itv.stop) && itv.val.read != oitv.val.read
+                oitv.val
+                    .suppl_itv
+                    .overlap(sitv.val.suppl_itv.start, sitv.val.suppl_itv.stop)
+                    && sitv.val.read != oitv.val.read
             })
             .collect_vec();
 
@@ -394,55 +492,65 @@ pub fn detect_events(
             continue;
         }
 
-        let all_contained = ovl_itvs.iter().all(|itv|
-            itv.overlap(itv.val.itv.start, itv.val.itv.stop) && itv.overlap(itv.val.suppl_itv.start, itv.val.suppl_itv.stop)
-        );
+        let all_contained = ovl_itvs.iter().all(|oitv| {
+            itv.overlap(oitv.val.itv.start, oitv.val.itv.stop)
+                && itv.overlap(oitv.val.suppl_itv.start, oitv.val.suppl_itv.stop)
+        });
         // If all contained in this window, means we're done
-        // SupplJuncSignal
         if all_contained {
-            let (itv_1, itv_2) = (ovl_itvs[0], ovl_itvs[1]);
+            if let (Some(itv_1), Some(itv_2)) = (ovl_itvs.first(), ovl_itvs.get(1)) {
+                let putative_type_1 =
+                    assign_type_by_clip_direction(&itv_1.val.itv, &itv_1.val.suppl_itv);
+                let putative_type_2 =
+                    assign_type_by_clip_direction(&itv_2.val.itv, &itv_2.val.suppl_itv);
+                eprintln!(
+                    "{:?},{itv:?}\n\t{putative_type_1:?},{putative_type_2:?},{},{}",
+                    (sitv.start, sitv.stop),
+                    itv_1.val.read,
+                    itv_2.val.read
+                )
+            }
+            if let Some(itv_1) = ovl_itvs.first() {
+                let Some(putative_type_1) =
+                    assign_type_by_clip_direction(&itv_1.val.itv, &itv_1.val.suppl_itv)
+                else {
+                    continue;
+                };
 
-            // For inversion, expect both ends to be in same clipping direction
-            // |x >|              |< *|
-            //     |< *|      |x >|
-            // For deletion, ends will be in opposing directions.
-            // |x >|      |< *|
-            // |* >|      |< x|
-            // If not one of these, omit.
-            // We also do this check again if not contained in a given window
-
-        } else {
+                let itv_span = itv_1.val.span();
+                events.push(Event::SV(SV {
+                    itv: Interval {
+                        start: itv_span.start,
+                        stop: itv_span.stop,
+                        val: chrom.to_owned(),
+                    },
+                    read: itv_1.val.read.clone(),
+                    typ: putative_type_1,
+                }));
+            }
+        } else if let Some(putative_type) =
+            assign_type_by_clip_direction(&sitv.val.itv, &sitv.val.suppl_itv)
+        {
             // Otherwise pass
             // SupplSignal
+            match putative_type {
+                SVType::Deletion => {
+                    let span = sitv.val.span();
+                    events.push(Event::SV(SV {
+                        itv: Interval {
+                            start: span.start,
+                            stop: span.stop,
+                            val: chrom.to_owned(),
+                        },
+                        read: sitv.val.read.clone(),
+                        typ: putative_type,
+                    }));
+                }
+                SVType::Inversion => {
+                    events.push(Event::Signal(Signal::SupplSignal(sitv.val.clone())))
+                }
+            }
         }
-        eprintln!("{:?}-{}", (itv.start, itv.stop), ovl_itvs.len());
-        eprintln!("({st},{end})-{:#?}", ovl_itvs);
-
-
-
-        // for itv_suppl_sec in itree_suppl_inv
-        //     .find(itv_suppl.start, itv_suppl.stop)
-        //     .filter(|i| i.val != itv_suppl.val)
-        // {
-        //     let clip_dir_sec = &itv_suppl_sec.val.3;
-        //     if matches!(
-        //         (clip_dir, clip_dir_sec),
-        //         (ClipDirection::Left, ClipDirection::Right)
-        //             | (ClipDirection::Right, ClipDirection::Left)
-        //     ) {
-        //         let rname_2 = &itv_suppl_sec.val.4;
-        //         let event = SupplJuncSignal {
-        //             chrom: chrom.to_owned(),
-        //             start_1: itv_suppl.val.1.start,
-        //             stop_1: itv_suppl.val.1.stop,
-        //             rname_1: rname_1.to_owned(),
-        //             start_2: itv_suppl_sec.val.1.start,
-        //             stop_2: itv_suppl_sec.val.2.stop,
-        //             rname_2: rname_2.to_owned(),
-        //         };
-        //         events.push(Event::Inversion(event));
-        //     }
-        // }
     }
 
     Ok(events)
