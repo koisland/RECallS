@@ -1,6 +1,13 @@
 use itertools::Itertools;
 use rust_lapper::Interval;
 
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Hash)]
+pub enum Direction {
+    Left,
+    Right,
+    Both,
+}
+
 #[inline]
 // Adapted from https://github.com/chaimleib/intervaltree/blob/1bc406e1f441577c4e421fc51aba2ab67fbd97fb/intervaltree/interval.py#L56
 pub fn overlap_length(a_first: usize, a_last: usize, b_first: usize, b_last: usize) -> usize {

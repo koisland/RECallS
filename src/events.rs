@@ -1,6 +1,6 @@
 use rust_lapper::Interval;
 
-use crate::call::SupplIntervalSignals;
+use crate::{call::SupplIntervalSignals, utils::Direction};
 
 #[derive(Debug)]
 pub enum Signal {
@@ -15,16 +15,17 @@ pub struct MismatchSignal {
     pub n_indels: usize,
     pub aln_len: usize,
     pub is_secondary: bool,
-    pub is_unbalanced: bool,
+    pub unbalanced_dir: Direction,
+    pub unbalanced_span: Interval<usize, ()>,
 }
 impl MismatchSignal {
     pub fn header() -> &'static str {
-        "#chrom\tstart\tstop\tread_name\tn_indels\taln_len\tis_secondary\tis_unbalanced"
+        "#chrom\tstart\tstop\tread_name\tn_indels\taln_len\tis_secondary\tunbalanced_dir"
     }
 
     pub fn as_bed(&self) -> String {
         format!(
-            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:?}",
             self.itv.val,
             self.itv.start,
             self.itv.stop,
@@ -32,7 +33,7 @@ impl MismatchSignal {
             self.n_indels,
             self.aln_len,
             self.is_secondary,
-            self.is_unbalanced
+            self.unbalanced_dir
         )
     }
 }

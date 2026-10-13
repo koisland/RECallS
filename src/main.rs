@@ -101,7 +101,7 @@ fn main() -> eyre::Result<()> {
     } else {
         read_paf(&paf_self_align, args.del_max_rgn_dv)?
     };
-    let null_itree_self_similar = Lapper::new(vec![]);
+    let null_itree_self_similar: Lapper<usize, String> = Lapper::new(vec![]);
 
     eprintln!(
         "Computing indel rates across {} chromosome(s).",
@@ -129,9 +129,6 @@ fn main() -> eyre::Result<()> {
         .flat_map(|region| {
             let read_stats = &chrom_read_stats[&region.val];
             let itree_ignore_chrom = ignore_bed.get(&region.val).unwrap_or(&null_itree_ignore);
-            let itree_self_similar_chrom = &itvs_self_similar
-                .get(&region.val)
-                .unwrap_or(&null_itree_self_similar);
 
             eprintln!("On {}:{}-{}...", region.val, region.start, region.stop);
             let events = detect_events(
@@ -139,7 +136,6 @@ fn main() -> eyre::Result<()> {
                 region,
                 read_stats,
                 itree_ignore_chrom,
-                itree_self_similar_chrom,
                 args.inv_indel_zscore as f64,
                 args.inv_min_aln_len,
                 args.inv_thr_unbalanced as f64,
@@ -186,15 +182,15 @@ fn main() -> eyre::Result<()> {
 
     // Merge overlapping reads
     for (chrom, events) in read_events.iter() {
-        eprintln!("{chrom}");
-
         // Complete events
         let mut inversion_events: Vec<Interval<usize, HashSet<&str>>> = vec![];
         let mut deletion_events: Vec<Interval<usize, HashSet<&str>>> = vec![];
 
         // Create itree of events split by type
         let mut suppl_signals: Vec<Interval<usize, &str>> = vec![];
-        let mut mismatch_signals: Vec<Interval<usize, &str>> = vec![];
+        let mut mismatch_signals: Vec<Interval<usize, &MismatchSignal>> = vec![];
+        let mut read_mismatch_signals: HashMap<&str, Vec<Interval<usize, &MismatchSignal>>> =
+            HashMap::new();
         for event in events.iter() {
             match event {
                 Event::SV(sv) => match sv.typ {
@@ -217,8 +213,24 @@ fn main() -> eyre::Result<()> {
                     mismatch_signals.push(Interval {
                         start: msignal.itv.start,
                         stop: msignal.itv.stop,
-                        val: &msignal.read,
+                        val: msignal,
                     });
+                    read_mismatch_signals
+                        .entry(&msignal.read)
+                        .and_modify(|itv| {
+                            itv.push(Interval {
+                                start: msignal.itv.start,
+                                stop: msignal.itv.stop,
+                                val: msignal,
+                            })
+                        })
+                        .or_insert_with(|| {
+                            vec![Interval {
+                                start: msignal.itv.start,
+                                stop: msignal.itv.stop,
+                                val: msignal,
+                            }]
+                        });
                 }
                 Event::Signal(Signal::SupplSignal(ssignal)) => {
                     suppl_signals.push(Interval {
@@ -242,223 +254,125 @@ fn main() -> eyre::Result<()> {
             |_a, _b| true,
             |a, b| a.val.iter().chain(b.val.iter()).cloned().collect(),
         );
-        for itv in merged_inversion_events.iter() {
-            println!(
-                "{chrom}\t{}\t{}\t{}",
-                itv.start,
-                itv.stop,
-                itv.val.iter().sorted().join(",")
-            )
-        }
-        for itv in merged_deletion_events.iter() {
-            println!(
-                "{chrom}\t{}\t{}\t{}",
-                itv.start,
-                itv.stop,
-                itv.val.iter().sorted().join(",")
-            )
+        // for itv in merged_inversion_events.iter() {
+        //     println!(
+        //         "{chrom}\t{}\t{}\t{}",
+        //         itv.start,
+        //         itv.stop,
+        //         itv.val.iter().sorted().join(",")
+        //     )
+        // }
+        // for itv in merged_deletion_events.iter() {
+        //     println!(
+        //         "{chrom}\t{}\t{}\t{}",
+        //         itv.start,
+        //         itv.stop,
+        //         itv.val.iter().sorted().join(",")
+        //     )
+        // }
+
+        // Partition by self-similar reads
+        let itree_mismatch_events = Lapper::new(mismatch_signals);
+        let mut eval_reads: HashSet<&str> = HashSet::new();
+        for itv_msignal in itree_mismatch_events.iter() {
+            if eval_reads.contains(&itv_msignal.val.read[..]) {
+                continue;
+            }
+
+            // if !["b919a3e8-c866-4793-60d4-c8d69792fe9f", "30580116-9da2-f84f-b0c8-46b140978a73"].contains(&&itv_msignal.val.read[..]) {
+            //     continue;
+            // }
+
+            let other_msignals_same_read = &read_mismatch_signals[&itv_msignal.val.read[..]];
+
+            // Check overlap of current position
+            // Do they have no unbalanced overlap
+            let mut ovl = itree_mismatch_events
+                .find(itv_msignal.start, itv_msignal.stop)
+                .collect_vec();
+            let ovl_reads: HashSet<&str> = ovl.iter().map(|itv| &itv.val.read[..]).collect();
+
+            // Check overlap with other positions
+            // Do they have no unbalanced overlap
+            let mut ovl_sec = other_msignals_same_read
+                .iter()
+                .filter(|itv| *itv != itv_msignal)
+                .flat_map(|itv| itree_mismatch_events.find(itv.start, itv.stop))
+                .collect_vec();
+            let ovl_sec_reads: HashSet<&str> =
+                ovl_sec.iter().map(|itv| &itv.val.read[..]).collect();
+
+            let shared_reads: HashSet<_> = ovl_reads.intersection(&ovl_sec_reads).collect();
+            if shared_reads.len() != 2 {
+                continue;
+            }
+            let shared_reads_str = shared_reads.iter().join("_");
+
+            ovl.retain(|itv| shared_reads.contains(&&itv.val.read[..]));
+            ovl_sec.retain(|itv| shared_reads.contains(&&itv.val.read[..]));
+
+            eval_reads.extend(shared_reads);
+
+            let n_dir_uniq = ovl
+                .iter()
+                .map(|itv| itv.val.unbalanced_dir)
+                .unique()
+                .count();
+            let n_dir_uniq_sec = ovl
+                .iter()
+                .map(|itv| itv.val.unbalanced_dir)
+                .unique()
+                .count();
+
+            if n_dir_uniq != 2 || n_dir_uniq_sec != 2 {
+                continue;
+            }
+
+            let has_prim = ovl.iter().any(|itv| !itv.val.is_secondary);
+            if !has_prim {
+                continue;
+            }
+
+            // println!("{}\t{}\t{}", chrom, itv_msignal.start, itv_msignal.stop);
+            // println!("1. {ovl:?}");
+            // println!("2. {ovl_sec:?}");
+
+            // println!(
+            //     "{chrom}\t{}\t{}\t{chrom}\t{}\t{}\t{}",
+            //     ovl[0].start, ovl[0].stop,
+            //     ovl_sec[0].start, ovl_sec[0].stop,
+            //     shared_reads_str,
+            // )
+
+            // println!("1.");
+            for itv in ovl.iter() {
+                println!(
+                    "{}\t{}\t{}\t{:?}-{}-{}",
+                    chrom,
+                    itv.start,
+                    itv.stop,
+                    itv.val.unbalanced_dir,
+                    itv.val.is_secondary,
+                    itv.val.read
+                )
+            }
+            // println!("2.");
+            for itv in ovl_sec.iter() {
+                println!(
+                    "{}\t{}\t{}\t{:?}-{}-{}",
+                    chrom,
+                    itv.start,
+                    itv.stop,
+                    itv.val.unbalanced_dir,
+                    itv.val.is_secondary,
+                    itv.val.read
+                )
+            }
+            // If do, valid
         }
 
         // let itree_suppl_signals = Lapper::new(suppl_signals);
-        // let itree_mismatch_events = Lapper::new(mismatch_signals);
     }
-    // let (read_inv_events, chrom_inv_events, chrom_inv_junc_events, chrom_del_events) =
-    //     read_events.into_iter().fold(
-    //         (
-    //             HashMap::<String, Vec<MismatchSignal>>::new(),
-    //             HashMap::<String, Vec<Interval<usize, MismatchSignal>>>::new(),
-    //             HashMap::<String, Vec<Interval<usize, SupplJuncSignal>>>::new(),
-    //             HashMap::<String, Vec<Interval<usize, SupplSignal>>>::new(),
-    //         ),
-    //         |(
-    //             mut read_inv_events,
-    //             mut chrom_inv_events,
-    //             mut chrom_inv_junc_events,
-    //             mut chrom_del_events,
-    //         ),
-    //          event| {
-    //             match event {
-    //                 // Event::Deletion(suppl_signal) => {
-    //                 //     // Add both the main aligned position and the supplementary position
-    //                 //     let itv_main = Interval {
-    //                 //         start: suppl_signal.start,
-    //                 //         stop: suppl_signal.stop,
-    //                 //         val: suppl_signal.clone(),
-    //                 //     };
-    //                 //     let itv_suppl = Interval {
-    //                 //         start: suppl_signal.suppl_start,
-    //                 //         stop: suppl_signal.suppl_stop,
-    //                 //         val: suppl_signal.clone(),
-    //                 //     };
-    //                 //     if let Some(chrom_events) = chrom_del_events.get_mut(&suppl_signal.chrom) {
-    //                 //         chrom_events.push(itv_main);
-    //                 //         chrom_events.push(itv_suppl)
-    //                 //     } else {
-    //                 //         chrom_del_events
-    //                 //             .insert(suppl_signal.chrom.to_owned(), vec![itv_main, itv_suppl]);
-    //                 //     }
-    //                 // }
-    //                 // Event::Inversion(suppl_junc_signal) => {
-    //                 //     let itv = Interval {
-    //                 //         start: suppl_junc_signal.start_1,
-    //                 //         stop: suppl_junc_signal.start_2,
-    //                 //         val: suppl_junc_signal.clone(),
-    //                 //     };
-    //                 //     if let Some(chrom_events) =
-    //                 //         chrom_inv_junc_events.get_mut(&suppl_junc_signal.chrom)
-    //                 //     {
-    //                 //         chrom_events.push(itv);
-    //                 //     } else {
-    //                 //         chrom_inv_junc_events
-    //                 //             .insert(suppl_junc_signal.chrom.to_owned(), vec![itv]);
-    //                 //     }
-    //                 // }
-    //                 // Event::InversionInferred(mismatch_signal) => {
-    //                 //     if let Some(read_events) = read_inv_events.get_mut(&mismatch_signal.rname) {
-    //                 //         read_events.push(mismatch_signal.clone());
-    //                 //     } else {
-    //                 //         read_inv_events.insert(
-    //                 //             mismatch_signal.rname.to_owned(),
-    //                 //             vec![mismatch_signal.clone()],
-    //                 //         );
-    //                 //     };
-    //                 //     if let Some(chrom_events) = chrom_inv_events.get_mut(&mismatch_signal.chrom)
-    //                 //     {
-    //                 //         chrom_events.push(Interval {
-    //                 //             start: mismatch_signal.start,
-    //                 //             stop: mismatch_signal.stop,
-    //                 //             val: mismatch_signal,
-    //                 //         });
-    //                 //     } else {
-    //                 //         chrom_inv_events.insert(
-    //                 //             mismatch_signal.chrom.to_owned(),
-    //                 //             vec![Interval {
-    //                 //                 start: mismatch_signal.start,
-    //                 //                 stop: mismatch_signal.stop,
-    //                 //                 val: mismatch_signal,
-    //                 //             }],
-    //                 //         );
-    //                 //     }
-    //                 // }
-    //                 Event::SV(sv) => todo!(),
-    //                 Event::Signal(signal) => todo!(),
-    //             }
-    //             (
-    //                 read_inv_events,
-    //                 chrom_inv_events,
-    //                 chrom_inv_junc_events,
-    //                 chrom_del_events,
-    //             )
-    //         },
-    //     );
-
-    // let n_del_events = chrom_del_events
-    //     .values()
-    //     .map(|events| events.len())
-    //     .sum::<usize>()
-    //     / 2;
-    // let itrees_chrom_inv_events: HashMap<String, Lapper<usize, MismatchSignal>> = chrom_inv_events
-    //     .into_iter()
-    //     .map(|(chrom, itvs)| (chrom, Lapper::new(itvs)))
-    //     .collect();
-    // let itrees_chrom_inv_junc_events: HashMap<String, Lapper<usize, SupplJuncSignal>> =
-    //     chrom_inv_junc_events
-    //         .into_iter()
-    //         .map(|(chrom, itvs)| (chrom, Lapper::new(itvs)))
-    //         .collect();
-    // let itrees_chrom_del_events: HashMap<String, Lapper<usize, SupplSignal>> = chrom_del_events
-    //     .into_iter()
-    //     .map(|(chrom, itvs)| (chrom, Lapper::new(itvs)))
-    //     .collect();
-
-    // eprintln!(
-    //     "Filtering {} candidate inversion and {n_del_events} candidate deletion events.",
-    //     read_inv_events
-    //         .values()
-    //         .map(|events| events.len())
-    //         .sum::<usize>(),
-    // );
-
-    // let mut final_read_inv_events = HashMap::new();
-    // let mut final_read_del_events = HashMap::new();
-
-    // // Must have more than one event per read (ex. sec and primary)
-    // // Must have at least one primary alignment
-    // // Must overlap with another self similar region
-    // let outfile_inv = output_dir.join("calls_inv.bed");
-    // let mut outfile_inv_fh = BufWriter::new(File::create(outfile_inv)?);
-    // writeln!(&mut outfile_inv_fh, "{}", MismatchSignal::header())?;
-
-    // for (chrom, itree_inv_events) in itrees_chrom_inv_events.iter() {
-    //     let itree_self_similar = itvs_self_similar
-    //         .get(chrom)
-    //         .unwrap_or(&null_itree_self_similar);
-    //     for itv in itree_inv_events.iter() {
-    //         let itv_len = (itv.stop - itv.start) as f64;
-    //         let all_read_events = &read_inv_events[&itv.val.rname];
-    //         // secondary aln check.
-    //         let sec_check =
-    //             all_read_events.len() < 2 || all_read_events.iter().all(|e| e.is_secondary);
-    //         let same_chrom = all_read_events.iter().all(|e| e.chrom == *chrom);
-    //         if sec_check || !same_chrom {
-    //             continue;
-    //         }
-    //         // self-similar regions in genome to this event
-    //         let n_itvs_self_similar_event = itree_self_similar
-    //             .find(itv.start, itv.stop)
-    //             .filter(|itv_self_similar| {
-    //                 let ovl_len = overlap_length(
-    //                     itv.start,
-    //                     itv.stop,
-    //                     itv_self_similar.start,
-    //                     itv_self_similar.stop,
-    //                 ) as f64;
-    //                 (ovl_len / itv_len) > 0.5 && *itv_self_similar.val.dv < 0.05
-    //             })
-    //             .flat_map(|itv_self_similar| {
-    //                 itree_inv_events.find(itv_self_similar.start, itv_self_similar.stop)
-    //             })
-    //             .count();
-
-    //         // One for itself
-    //         if n_itvs_self_similar_event > 1 {
-    //             // Store events to write to bam
-    //             final_read_inv_events
-    //                 .entry(itv.val.rname.clone())
-    //                 .and_modify(|events: &mut Vec<MismatchSignal>| events.push(itv.val.clone()))
-    //                 .or_insert_with(|| vec![itv.val.clone()]);
-    //             writeln!(&mut outfile_inv_fh, "{}", itv.val.as_bed())?;
-    //         }
-    //     }
-    // }
-
-    // let outfile_inv_junc = output_dir.join("calls_inv_junc.bed");
-    // let mut outfile_inv_junc_fh = BufWriter::new(File::create(outfile_inv_junc)?);
-    // writeln!(&mut outfile_inv_junc_fh, "{}", SupplJuncSignal::header())?;
-    // for itree_inv_junc_events in itrees_chrom_inv_junc_events.values() {
-    //     for itv in itree_inv_junc_events.iter() {
-    //         writeln!(&mut outfile_inv_junc_fh, "{}", itv.val.as_bed())?;
-    //     }
-    // }
-
-    // // Then check overlaps, to be confident require that other end also produces suppl on same side so at least 2 ovl
-    // let outfile_del = output_dir.join("calls_del.bed");
-    // let mut outfile_del_fh = BufWriter::new(File::create(outfile_del)?);
-    // writeln!(&mut outfile_del_fh, "{}", SupplSignal::header())?;
-
-    // for itree_del_events in itrees_chrom_del_events.values() {
-    //     for itv in itree_del_events.iter() {
-    //         let ovl_cnt = itree_del_events.count(itv.start, itv.stop);
-    //         if ovl_cnt >= args.del_min_ovl_cnt {
-    //             // Store events to write to bam
-    //             final_read_del_events
-    //                 .entry(itv.val.rname.clone())
-    //                 .and_modify(|events: &mut Vec<SupplSignal>| events.push(itv.val.clone()))
-    //                 .or_insert_with(|| vec![itv.val.clone()]);
-    //             writeln!(&mut outfile_del_fh, "{}", itv.val.as_bed())?;
-    //         }
-    //     }
-    // }
 
     // if let Some(out_bam) = args.output_bam {
     //     eprintln!("Generating tagged BAM.",);

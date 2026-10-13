@@ -53,7 +53,7 @@ pub struct Args {
     pub inv_thr_unbalanced: f32,
 
     /// Inversion minimum number of SNVs
-    #[arg(long, default_value_t = 20)]
+    #[arg(long, default_value_t = 10)]
     pub inv_min_num_snvs: usize,
 
     /// Deletion maximum region divergence between supplementary aligned regions.

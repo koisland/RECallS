@@ -1,9 +1,13 @@
 use kernel_density_estimation::prelude::*;
+use rust_lapper::Interval;
+
+use crate::utils::Direction;
 
 #[derive(Debug)]
 #[allow(unused)]
 pub struct UnbalancedSummary {
-    pub is_unbalanced: bool,
+    pub direction: Option<Direction>,
+    pub span: Option<Interval<usize, ()>>,
     pub integral_left: f64,
     pub integral_right: f64,
 }
@@ -15,7 +19,7 @@ pub struct UnbalancedSummary {
 /// * If greater than 50%, is considered unbalanced
 ///
 /// # Arguments
-/// * mismatch_pos: all mismatch positions on read
+/// * mismatch_pos: all mismatch positions on read. sorted
 /// * read_len: read length
 /// * min_n_events: minimum number of events to consider alignment
 /// * thr_unbalanced: absolute difference between left and right side integral. Between 0.0-1.0
@@ -24,7 +28,7 @@ pub struct UnbalancedSummary {
 /// * If is an unbalanced alignment
 pub fn is_unbalanced_alignment(
     marker_qpos: &[f64],
-    read_len: f64,
+    itv: (usize, usize),
     min_n_events: usize,
     thr_unbalanced: f64,
 ) -> eyre::Result<Option<UnbalancedSummary>> {
@@ -32,6 +36,8 @@ pub fn is_unbalanced_alignment(
         return Ok(None);
     }
     // Get midpoint of read
+    let (st, end) = (itv.0, itv.1);
+    let read_len = (end - st) as f64;
     let midpt = read_len / 2.0;
 
     if !marker_qpos.is_empty() {
@@ -46,18 +52,46 @@ pub fn is_unbalanced_alignment(
         let (Ok(idx) | Err(idx)) = marker_qpos.binary_search_by(|a| a.total_cmp(&midpt));
 
         let integral_left = y
-            .get(0..idx + 1)
+            .get(0..idx)
             .map(|sl| sl.iter().sum::<f64>())
             .unwrap_or_default()
             / total;
         let integral_right = y
-            .get(idx + 1..)
+            .get(idx..)
             .map(|sl| sl.iter().sum::<f64>())
             .unwrap_or_default()
             / total;
         let abs_diff_area = (integral_left - integral_right).abs();
+        let is_unbalanced = abs_diff_area > thr_unbalanced;
+
+        let (direction, span) = if is_unbalanced {
+            let pos = marker_qpos[idx.saturating_sub(1)] as usize;
+            if integral_left > integral_right {
+                (
+                    Some(Direction::Left),
+                    Some(Interval {
+                        start: st,
+                        stop: st + pos,
+                        val: (),
+                    }),
+                )
+            } else {
+                (
+                    Some(Direction::Right),
+                    Some(Interval {
+                        start: st + pos,
+                        stop: end,
+                        val: (),
+                    }),
+                )
+            }
+        } else {
+            (None, None)
+        };
+
         Ok(Some(UnbalancedSummary {
-            is_unbalanced: abs_diff_area > thr_unbalanced,
+            direction,
+            span,
             integral_left,
             integral_right,
         }))
@@ -143,12 +177,11 @@ mod test {
         let res: Vec<(String, bool)> = get_mismatch_pos(&mut fh, &region, reads)?
             .into_iter()
             .map(|(rname, (mismatch_pos, read_len))| {
+                let res =
+                    is_unbalanced_alignment(&mismatch_pos, (0, read_len as usize), 5, 0.5).unwrap();
                 (
                     rname,
-                    is_unbalanced_alignment(&mismatch_pos, read_len, 5, 0.5)
-                        .unwrap()
-                        .map(|s| s.is_unbalanced)
-                        .unwrap_or_default(),
+                    res.map(|s| s.direction.is_some()).unwrap_or_default(),
                 )
             })
             .sorted_by(|a, b| a.0.cmp(&b.0))

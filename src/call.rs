@@ -21,21 +21,14 @@ use crate::{
     events::{Event, MismatchSignal, SV, SVType, Signal},
     self_align::Paf,
     unbalanced_aln::is_unbalanced_alignment,
-    utils::overlap_length,
+    utils::{Direction, overlap_length},
 };
 
 const CLIP_OVL_DST: usize = 2000;
 
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
-pub enum ClipDirection {
-    Left,
-    Right,
-    Both,
-}
-
 type SARecord<'a> = (&'a str, &'a str, &'a str, &'a str, &'a str, &'a str);
 
-fn get_clip_direction(cg: impl Iterator<Item = Op>) -> Option<ClipDirection> {
+fn get_clip_direction(cg: impl Iterator<Item = Op>) -> Option<Direction> {
     let mut left_op = None;
     let mut right_op = None;
     for (i, op) in cg
@@ -50,9 +43,9 @@ fn get_clip_direction(cg: impl Iterator<Item = Op>) -> Option<ClipDirection> {
     }
     match (left_op, right_op) {
         (None, None) => None,
-        (None, Some(_)) => Some(ClipDirection::Right),
-        (Some(_), None) => Some(ClipDirection::Left),
-        (Some(_), Some(_)) => Some(ClipDirection::Both),
+        (None, Some(_)) => Some(Direction::Right),
+        (Some(_), None) => Some(Direction::Left),
+        (Some(_), Some(_)) => Some(Direction::Both),
     }
 }
 
@@ -148,16 +141,16 @@ pub fn collect_read_markers(
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SupplIntervalSignals {
     pub chrom: String,
-    pub itv: Interval<usize, ClipDirection>,
-    pub suppl_itv: Interval<usize, ClipDirection>,
+    pub itv: Interval<usize, Direction>,
+    pub suppl_itv: Interval<usize, Direction>,
     pub read: String,
 }
 
 impl SupplIntervalSignals {
     pub fn new(
         chrom: String,
-        itv: Interval<usize, ClipDirection>,
-        suppl_itv: Interval<usize, ClipDirection>,
+        itv: Interval<usize, Direction>,
+        suppl_itv: Interval<usize, Direction>,
         read: String,
     ) -> Self {
         SupplIntervalSignals {
@@ -170,24 +163,22 @@ impl SupplIntervalSignals {
 
     pub fn breakpoints(&self) -> (usize, usize) {
         match (self.itv.val, self.suppl_itv.val) {
-            (ClipDirection::Left, ClipDirection::Left)
-            | (ClipDirection::Left, ClipDirection::Both) => (
+            (Direction::Left, Direction::Left) | (Direction::Left, Direction::Both) => (
                 std::cmp::min(self.itv.start, self.suppl_itv.start),
                 std::cmp::max(self.itv.start, self.suppl_itv.start),
             ),
-            (ClipDirection::Left, ClipDirection::Right) => (
+            (Direction::Left, Direction::Right) => (
                 std::cmp::min(self.itv.start, self.suppl_itv.stop),
                 std::cmp::max(self.itv.start, self.suppl_itv.stop),
             ),
-            (ClipDirection::Right, ClipDirection::Left)
-            | (ClipDirection::Right, ClipDirection::Both)
-            | (ClipDirection::Both, ClipDirection::Left)
-            | (ClipDirection::Both, ClipDirection::Both) => (
+            (Direction::Right, Direction::Left)
+            | (Direction::Right, Direction::Both)
+            | (Direction::Both, Direction::Left)
+            | (Direction::Both, Direction::Both) => (
                 std::cmp::min(self.itv.stop, self.suppl_itv.start),
                 std::cmp::max(self.itv.stop, self.suppl_itv.start),
             ),
-            (ClipDirection::Right, ClipDirection::Right)
-            | (ClipDirection::Both, ClipDirection::Right) => (
+            (Direction::Right, Direction::Right) | (Direction::Both, Direction::Right) => (
                 std::cmp::min(self.itv.stop, self.suppl_itv.stop),
                 std::cmp::max(self.itv.stop, self.suppl_itv.stop),
             ),
@@ -213,34 +204,34 @@ impl SupplIntervalSignals {
 // |* >|      |< x|
 // If not one of these, omit.
 fn assign_type_by_clip_direction(
-    itv: &Interval<usize, ClipDirection>,
-    suppl_itv: &Interval<usize, ClipDirection>,
+    itv: &Interval<usize, Direction>,
+    suppl_itv: &Interval<usize, Direction>,
 ) -> Option<SVType> {
     // What is the order of the current alignment relative to the suppl alignment?
     let sa_upstream = suppl_itv.start > itv.stop;
 
     match (sa_upstream, &itv.val, &suppl_itv.val) {
-            (_, ClipDirection::Left, ClipDirection::Left) |
-            (_, ClipDirection::Right, ClipDirection::Right) => {
+            (_, Direction::Left, Direction::Left) |
+            (_, Direction::Right, Direction::Right) => {
                 Some(SVType::Inversion)
             },
             // Invalid
-            (_, ClipDirection::Both, _) |
-            (_, _, ClipDirection::Both) |
+            (_, Direction::Both, _) |
+            (_, _, Direction::Both) |
             //       *
             // |<  | |  >|
-            (true, ClipDirection::Left, ClipDirection::Right) |
+            (true, Direction::Left, Direction::Right) |
             // *     
             // |<  | |  >|
-            (false, ClipDirection::Right, ClipDirection::Left) => {
+            (false, Direction::Right, Direction::Left) => {
                 None
             },
             //       *
             // |  >| |<  |
             // *     
             // |  >| |<  |
-            (true, ClipDirection::Right, ClipDirection::Left) |
-            (false, ClipDirection::Left, ClipDirection::Right) => {
+            (true, Direction::Right, Direction::Left) |
+            (false, Direction::Left, Direction::Right) => {
                 // let n_similar = itree_self_similar.count(sa_start, sa_start+sa_aln_len);
                 // if n_similar != 0 {
                 //     let event = SupplSignal {
@@ -265,7 +256,6 @@ pub fn detect_events(
     itv: &Interval<usize, String>,
     read_stats: &ReadIndelSummaryStats,
     itree_ignore: &Lapper<usize, String>,
-    itree_self_similar: &Lapper<usize, Paf>,
     inv_indel_zscore: f64,
     inv_min_aln_len: usize,
     inv_thr_unbalanced: f64,
@@ -294,12 +284,12 @@ pub fn detect_events(
         let is_suppl = rec.data().get(b"SA").is_some();
         let is_sec = rec.flags().contains(Flags::SECONDARY);
         let typ_read_stats = &indel_read_stats[is_sec as usize];
-        let aln_len = noodles::sam::alignment::Record::alignment_span(&rec).unwrap()?;
-        let aln_len_f = aln_len as f64;
         let (rst, rend) = (
             rec.alignment_start().unwrap().map(|p| p.get())?,
             rec.alignment_end().unwrap().map(|p| p.get())?,
         );
+        let aln_len = rend - rst;
+        let aln_len_f = aln_len as f64;
 
         // Ignore if read overlaps majority of any ignored region.
         if itree_ignore.find(rst, rend).any(|ovl| {
@@ -316,20 +306,18 @@ pub fn detect_events(
         let indel_rate_zscore = typ_read_stats.zscore(read_markers.n_indels as f64 / aln_len_f);
         let unbalanced_summary = is_unbalanced_alignment(
             &read_markers.pos,
-            aln_len as f64,
+            (rst, rend),
             inv_min_num_snvs,
             inv_thr_unbalanced,
         )?;
 
         // Inversion signal based on mismatches
-        let is_unbalanced = unbalanced_summary
-            .as_ref()
-            .map(|s| s.is_unbalanced)
-            .unwrap_or_default();
         if indel_rate_zscore > inv_indel_zscore
             && aln_len_f > inv_min_aln_len
             && read_markers.n_mismatches >= inv_min_num_snvs
-            && is_unbalanced
+            && let Some(unbalanced_dir) =
+                unbalanced_summary.as_ref().and_then(|summ| summ.direction)
+            && let Some(unbalanced_span) = unbalanced_summary.and_then(|summ| summ.span)
         {
             let event = MismatchSignal {
                 itv: Interval {
@@ -341,7 +329,8 @@ pub fn detect_events(
                 n_indels: read_markers.n_indels,
                 aln_len,
                 is_secondary: is_sec,
-                is_unbalanced,
+                unbalanced_dir,
+                unbalanced_span,
             };
             events.push(Event::Signal(Signal::MismatchSignal(event)));
         }
@@ -385,7 +374,7 @@ pub fn detect_events(
 
                 match clip_direction {
                     // |<  |
-                    ClipDirection::Left => sa_itvs.push(Interval {
+                    Direction::Left => sa_itvs.push(Interval {
                         start: rst.saturating_sub(CLIP_OVL_DST),
                         stop: rst + CLIP_OVL_DST,
                         val: SupplIntervalSignals::new(
@@ -404,7 +393,7 @@ pub fn detect_events(
                         ),
                     }),
                     // |  >|
-                    ClipDirection::Right => sa_itvs.push(Interval {
+                    Direction::Right => sa_itvs.push(Interval {
                         start: rend.saturating_sub(CLIP_OVL_DST),
                         stop: rend + CLIP_OVL_DST,
                         val: SupplIntervalSignals::new(
@@ -423,7 +412,7 @@ pub fn detect_events(
                         ),
                     }),
                     // |< >|
-                    ClipDirection::Both => {
+                    Direction::Both => {
                         sa_itvs.push(Interval {
                             start: rst.saturating_sub(CLIP_OVL_DST),
                             stop: rst + CLIP_OVL_DST,
