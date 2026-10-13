@@ -16,7 +16,6 @@ cargo build --release
 
 Then run:
 ```bash
-# Requires minimap2 in PATH
 ./target/release/RECallS -i "${sample}.bam" -f "${sample}.fa.gz"
 ```
 
@@ -27,8 +26,7 @@ recalls
 ├── calls_del.bed
 ├── calls_inv.bed
 ├── calls_inv_junc.bed
-├── chrom_indel_stats.tsv
-└── chrom_self_align.paf
+└── chrom_indel_stats.tsv
 ```
 
 Where:
@@ -38,7 +36,6 @@ Where:
 |calls_inv_junc.bed|Putative intrachromosomal inversion event breakpoints|
 |calls_inv.bed|Putative intrachromosomal inversion event breakpoints|
 |chrom_indel_stats.tsv|Chromosome read indel stats for primary and secondary alignments|
-|chrom_self_align.paf|PAF file for self-alignment. Uses `minimap2` and params: `-PD -k19 -w19 -m200`|
 
 ## Docs
 See [`docs/long_distance.md`](docs/long_distance.md) for overview.

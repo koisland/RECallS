@@ -17,10 +17,9 @@ use crate::{
     cli::Args,
     events::{Event, MismatchSignal, SVType, Signal},
     io::{
-        FastaHandle, aligned_intervals_windows, read_bed, read_indel_read_stats, read_paf,
-        write_indel_read_stats, write_itvs_self_similar_paf,
+        aligned_intervals_windows, read_bed, read_indel_read_stats,
+        write_indel_read_stats,
     },
-    self_align::generate_contig_self_alignment,
     utils::{merge_intervals, overlap_length},
 };
 
@@ -29,7 +28,6 @@ mod call;
 mod cli;
 mod events;
 mod io;
-mod self_align;
 mod tag;
 mod unbalanced_aln;
 mod utils;
@@ -74,38 +72,9 @@ fn main() -> eyre::Result<()> {
         aligned_intervals_windows(&mut fh, args.wg_window)
     }?;
 
-    // Generate dotplot per contig
-    let fh = FastaHandle::new(fa)?;
-    let seq_lens: HashMap<String, usize> = fh
-        .fai
-        .as_ref()
-        .iter()
-        .map(|rec| {
-            let ctg_name = str::from_utf8(rec.name()).unwrap();
-            let ctg_len = rec.length() as usize;
-            (ctg_name.to_owned(), ctg_len)
-        })
-        .collect();
-
-    eprintln!(
-        "Detecting homologous regions from self-alignment of {} chromosome(s).",
-        seq_lens.len()
-    );
-    std::mem::drop(fh);
-
-    let paf_self_align = output_dir.join("chrom_self_align.paf");
-    let itvs_self_similar = if !paf_self_align.exists() {
-        let itvs_self_similar = generate_contig_self_alignment(fa, &seq_lens, args.del_max_rgn_dv)?;
-        write_itvs_self_similar_paf(&itvs_self_similar, &paf_self_align)?;
-        itvs_self_similar
-    } else {
-        read_paf(&paf_self_align, args.del_max_rgn_dv)?
-    };
-    let null_itree_self_similar: Lapper<usize, String> = Lapper::new(vec![]);
-
     eprintln!(
         "Computing indel rates across {} chromosome(s).",
-        seq_lens.len()
+        regions.len()
     );
     let tsv_indel_stats = output_dir.join("chrom_indel_stats.tsv");
     let chrom_read_stats = if !tsv_indel_stats.exists() {
@@ -119,7 +88,7 @@ fn main() -> eyre::Result<()> {
     eprintln!(
         "Detecting events across {} window(s) in {} chromosome(s).",
         regions.values().map(|b| b.len()).sum::<usize>(),
-        seq_lens.len()
+        regions.len()
     );
 
     let intervals: Vec<&Interval<usize, String>> = regions.values().flatten().collect();

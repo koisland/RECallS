@@ -19,7 +19,6 @@ use rust_lapper::{Interval, Lapper};
 use crate::{
     baseline::ReadIndelSummaryStats,
     events::{Event, MismatchSignal, SV, SVType, Signal},
-    self_align::Paf,
     unbalanced_aln::is_unbalanced_alignment,
     utils::{Direction, overlap_length},
 };
