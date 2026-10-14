@@ -10,6 +10,5 @@
 
 # other
 recalls
-*.graph
 out*
-*.png
+!docs/*.png

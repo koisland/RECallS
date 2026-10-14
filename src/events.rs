@@ -1,87 +1,74 @@
+use itertools::Itertools;
+use rust_lapper::Interval;
+
+use crate::{call::SupplIntervalSignals, utils::Direction};
+
+#[derive(Debug)]
+pub enum Signal {
+    SupplSignal(SupplIntervalSignals),
+    MismatchSignal(MismatchSignal),
+}
+
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct MismatchSignal {
-    pub chrom: String,
-    pub start: usize,
-    pub stop: usize,
-    pub rname: String,
+    pub itv: Interval<usize, String>,
+    pub read: String,
     pub n_indels: usize,
     pub aln_len: usize,
     pub is_secondary: bool,
-    pub is_unbalanced: bool,
+    pub unbalanced_dir: Direction,
+    pub unbalanced_span: Interval<usize, ()>,
 }
-impl MismatchSignal {
-    pub fn header() -> &'static str {
-        "#chrom\tstart\tstop\tread_name\tn_indels\taln_len\tis_secondary\tis_unbalanced"
-    }
 
-    pub fn as_bed(&self) -> String {
-        format!(
-            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
-            self.chrom,
-            self.start,
-            self.stop,
-            self.rname,
-            self.n_indels,
-            self.aln_len,
-            self.is_secondary,
-            self.is_unbalanced
-        )
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum SVType {
+    Deletion,
+    Inversion,
+}
+
+impl SVType {
+    fn color(&self) -> &'static str {
+        match self {
+            SVType::Deletion => "255,0,0",
+            SVType::Inversion => "0,0,255",
+        }
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SupplJuncSignal {
-    pub chrom: String,
-    pub start_1: usize,
-    pub stop_1: usize,
-    pub rname_1: String,
-    pub start_2: usize,
-    pub stop_2: usize,
-    pub rname_2: String,
+pub struct SV {
+    pub itv: Interval<usize, String>,
+    pub reads: [Option<String>; 2],
+    pub typ: SVType,
 }
-impl SupplJuncSignal {
-    pub fn header() -> &'static str {
-        "#chrom\tstart\tstop\tread_name\tstart_2\tstop_2\tread_name_2"
+
+impl SV {
+    pub fn reads(&self) -> impl Iterator<Item = &str> {
+        self.reads.iter().flatten().map(|read| &read[..])
     }
 
     pub fn as_bed(&self) -> String {
+        let reads = if let Some((r1, r2)) = self.reads().collect_tuple() {
+            (r1, r2)
+        } else {
+            ("", "")
+        };
         format!(
-            "{}\t{}\t{}\t{}\t{}\t{}\t{}",
-            self.chrom,
-            self.start_1,
-            self.stop_1,
-            self.rname_1,
-            self.start_2,
-            self.stop_2,
-            self.rname_2
+            "{}\t{}\t{}\t{}~{}\t0\t.\t{}\t{}\t{}",
+            self.itv.val,
+            self.itv.start,
+            self.itv.stop,
+            reads.0,
+            reads.1,
+            self.itv.start,
+            self.itv.stop,
+            self.typ.color()
         )
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SupplSignal {
-    pub chrom: String,
-    pub start: usize,
-    pub stop: usize,
-    pub suppl_start: usize,
-    pub suppl_stop: usize,
-    pub rname: String,
-}
-impl SupplSignal {
-    pub fn header() -> &'static str {
-        "#chrom\tstart\tstop\tread_name\tsuppl_start\tsuppl_stop"
-    }
-
-    pub fn as_bed(&self) -> String {
-        format!(
-            "{}\t{}\t{}\t{}\t{}\t{}",
-            self.chrom, self.start, self.stop, self.rname, self.suppl_start, self.suppl_stop
-        )
-    }
-}
-
+#[derive(Debug)]
 pub enum Event {
-    Deletion(SupplSignal),
-    Inversion(SupplJuncSignal),
-    InversionInferred(MismatchSignal),
+    SV(SV),
+    Signal(Signal),
 }

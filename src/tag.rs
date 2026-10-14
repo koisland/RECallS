@@ -1,27 +1,47 @@
-use std::{collections::HashMap, fs::File, num::NonZero, path::Path};
+use std::{
+    collections::{HashMap, HashSet},
+    fs::File,
+    num::NonZero,
+    path::Path,
+};
 
 use noodles::{
-    bam, bgzf, core::{Position, Region}, sam::alignment::{
-        Record, RecordBuf, io::Write, record::data::field::Tag, record_buf::data::field::Value,
+    bam, bgzf,
+    core::{Position, Region},
+    sam::alignment::{
+        RecordBuf, io::Write, record::data::field::Tag, record_buf::data::field::Value,
     },
 };
-// use rust_lapper::Interval;
 
-use crate::events::{MismatchSignal, SupplSignal};
+use crate::events::{SV, SVType};
 
-pub fn tag_bam(
-    bam: &Path,
-    out_bam: &Path,
-    inv_events: &HashMap<String, Vec<MismatchSignal>>,
-    del_events: &HashMap<String, Vec<SupplSignal>>,
-) -> eyre::Result<()> {
+pub fn create_tagged_bam(bam: &Path, out_bam: &Path, events: &HashMap<String, Vec<SV>>) -> eyre::Result<()> {
     let mut fh = bam::io::indexed_reader::Builder::default().build_from_path(bam)?;
     let header = fh.read_header()?;
 
     let dst_file = File::create(out_bam)?;
-    let encoder = bgzf::io::MultithreadedWriter::with_worker_count(NonZero::new(4).unwrap(), dst_file);
+    let encoder =
+        bgzf::io::MultithreadedWriter::with_worker_count(NonZero::new(4).unwrap(), dst_file);
     let mut fh_out = bam::io::Writer::from(encoder);
     fh_out.write_header(&header)?;
+
+    // Partition reads by event
+    let (inv_events, del_events) = events.values().fold(
+        (HashSet::new(), HashSet::new()),
+        |(mut inv_events, mut del_events), svs| {
+            for (sv_type, reads) in svs.iter().map(|sv| (sv.typ.clone(), sv.reads())) {
+                match sv_type {
+                    SVType::Deletion => {
+                        del_events.extend(reads);
+                    }
+                    SVType::Inversion => {
+                        inv_events.extend(reads);
+                    }
+                }
+            }
+            (inv_events, del_events)
+        },
+    );
 
     // TODO: Parallelize
     for region in header
@@ -38,14 +58,10 @@ pub fn tag_bam(
         let query = fh.query(&header, &region)?;
         for rec in query.records().flatten() {
             let rname = str::from_utf8(rec.name().unwrap())?;
-            let (rst, rend) = (
-                rec.alignment_start().unwrap().map(|p| p.get())?,
-                rec.alignment_end().unwrap().map(|p| p.get())?,
-            );
-            let tag_value = if inv_events.get(rname).map(|e| e.iter().find(|e| e.start == rst && e.stop == rend )).is_some() {
-                Some("inv")
-            } else if del_events.get(rname).map(|e| e.iter().find(|e| e.start == rst && e.stop == rend )).is_some() {
-                Some("del")
+            let tag_value = if inv_events.contains(rname) {
+                Some("Inversion")
+            } else if del_events.contains(rname) {
+                Some("Deletion")
             } else {
                 None
             };

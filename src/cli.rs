@@ -7,17 +7,19 @@ use clap::Parser;
 #[command(version, about, long_about = None)]
 pub struct Args {
     /// DSA read alignment
-    #[arg(short = 'i', long)]
+    // #[arg(short = 'i', long)]
+    #[arg(
+        short = 'i',
+        long,
+        // default_value = "test/amplicon/chm13_chr7_sim.bam"
+    )]
     pub bam: PathBuf,
-
-    /// Genome assembly
-    #[arg(short, long)]
-    pub fa: PathBuf,
 
     /// BED file to restrict search
     #[arg(short, long)]
     pub bed: Option<PathBuf>,
 
+    /// Output directory
     #[arg(short, long, default_value = "./recalls")]
     pub output_dir: PathBuf,
 
@@ -26,7 +28,12 @@ pub struct Args {
     pub output_bam: Option<PathBuf>,
 
     /// BED file to ignore
-    #[arg[short = 'n', long]]
+    // #[arg[short = 'n', long]]
+    #[arg[
+        short = 'n',
+        long,
+        // default_value = "test/amplicon/chm13_chr7_lcr.bed"
+    ]]
     pub ignore_bed: Option<PathBuf>,
 
     /// Number of threads
@@ -45,12 +52,12 @@ pub struct Args {
     #[arg(long, default_value_t = 10_000)]
     pub inv_min_aln_len: usize,
 
-    /// Inversion indel threshold unbalanced
+    /// Inversion mismatch threshold unbalanced
     #[arg(long, default_value_t = 0.5)]
     pub inv_thr_unbalanced: f32,
 
     /// Inversion minimum number of SNVs
-    #[arg(long, default_value_t = 20)]
+    #[arg(long, default_value_t = 10)]
     pub inv_min_num_snvs: usize,
 
     /// Deletion maximum region divergence between supplementary aligned regions.

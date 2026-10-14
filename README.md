@@ -1,6 +1,38 @@
 # RECallS
 (R)ecombination (E)vent (call)er from (S)perm long-read sequencings data
 
+<table>
+  <tr>
+    <td>
+      <figure>
+        <img src="docs/deletion_suppl.png" width="100%">
+        <br>
+        <figcaption>
+          IGV screenshot of <b>simulated deletion</b> detected via supplementary read alignments
+        </figcaption>
+      </figure>
+    </td>
+    <td>
+      <figure>
+        <img src="docs/inversion_suppl.png" width="100%">
+        <br>
+        <figcaption>
+          IGV screenshot of <b>simulated inversion</b> detected via supplementary read alignments
+        </figcaption>
+      </figure>
+    </td>
+    <td>
+      <figure>
+        <img src="docs/inversion_mismatch.png" width="100%">
+        <br>
+        <figcaption>
+          IGV screenshot of <b>simulated inversion</b> detected via SNVs in secondary read alignments 
+        </figcaption>
+      </figure>
+    </td>
+  </tr>
+</table>
+
 ## Usage
 Align reads to donor-specific assembly.
 ```bash
@@ -16,29 +48,24 @@ cargo build --release
 
 Then run:
 ```bash
-# Requires minimap2 in PATH
-./target/release/RECallS -i "${sample}.bam" -f "${sample}.fa.gz"
+./target/release/RECallS -i "${sample}.bam"
 ```
 
 ## Outputs
 Within the output directory (`-o`):
 ```
 recalls
-├── calls_del.bed
-├── calls_inv.bed
-├── calls_inv_junc.bed
-├── chrom_indel_stats.tsv
-└── chrom_self_align.paf
+├── calls.bed
+├── *.bam
+└── chrom_indel_stats.tsv
 ```
 
 Where:
 |name|desc|
 |-|-|
-|calls_del.bed|Putative intrachromosomal deletion event breakpoints|
-|calls_inv_junc.bed|Putative intrachromosomal inversion event breakpoints|
-|calls_inv.bed|Putative intrachromosomal inversion event breakpoints|
-|chrom_indel_stats.tsv|Chromosome read indel stats for primary and secondary alignments|
-|chrom_self_align.paf|PAF file for self-alignment. Uses `minimap2` and params: `-PD -k19 -w19 -m200`|
+|`calls.bed`|Putative intrachromosomal inversion and deletion events|
+|`*.bam`|(Optional with `-g`) Tagged BAM file with only reads involved in `calls.bed`. Custom tag `EV` marks what event type.|
+|`chrom_indel_stats.tsv`|Chromosome read indel stats for primary and secondary alignments|
 
 ## Docs
 See [`docs/long_distance.md`](docs/long_distance.md) for overview.
@@ -55,6 +82,8 @@ Then to run:
 ```bash
 ./target/release/RECallS \
 -i test/amplicon/chm13_chr7_sim.bam \
--f test/amplicon/chm13_chr7.fa.gz \
--n "test/amplicon/chm13_chr7_lcr.bed"
+-n test/amplicon/chm13_chr7_lcr.bed \
+-g test/amplicon/chm13_chr7_sim_tag.bam
+
+samtools index test/amplicon/chm13_chr7_sim_tag.bam
 ```
