@@ -15,7 +15,7 @@ use noodles::{
 
 use crate::events::{SV, SVType};
 
-pub fn tag_bam(bam: &Path, out_bam: &Path, events: &HashMap<String, Vec<SV>>) -> eyre::Result<()> {
+pub fn create_tagged_bam(bam: &Path, out_bam: &Path, events: &HashMap<String, Vec<SV>>) -> eyre::Result<()> {
     let mut fh = bam::io::indexed_reader::Builder::default().build_from_path(bam)?;
     let header = fh.read_header()?;
 

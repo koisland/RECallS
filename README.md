@@ -24,14 +24,16 @@ Within the output directory (`-o`):
 ```
 recalls
 ├── calls.bed
+├── *.bam
 └── chrom_indel_stats.tsv
 ```
 
 Where:
 |name|desc|
 |-|-|
-|calls.bed|Putative intrachromosomal inversion and deletion events|
-|chrom_indel_stats.tsv|Chromosome read indel stats for primary and secondary alignments|
+|`calls.bed`|Putative intrachromosomal inversion and deletion events|
+|`*.bam`|(Optional with `-g`) Tagged BAM file with only reads involved in `calls.bed`. Custom tag `EV` marks what event type.|
+|`chrom_indel_stats.tsv`|Chromosome read indel stats for primary and secondary alignments|
 
 ## Docs
 See [`docs/long_distance.md`](docs/long_distance.md) for overview.
@@ -48,5 +50,8 @@ Then to run:
 ```bash
 ./target/release/RECallS \
 -i test/amplicon/chm13_chr7_sim.bam \
--n "test/amplicon/chm13_chr7_lcr.bed"
+-n test/amplicon/chm13_chr7_lcr.bed \
+-g test/amplicon/chm13_chr7_sim_tag.bam
+
+samtools index test/amplicon/chm13_chr7_sim_tag.bam
 ```

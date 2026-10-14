@@ -17,7 +17,7 @@ use crate::{
     events::{Event, Signal},
     io::{aligned_intervals_windows, read_bed, read_indel_read_stats, write_indel_read_stats},
     postprocess::postprocess_events,
-    tag::tag_bam,
+    tag::create_tagged_bam,
 };
 
 mod baseline;
@@ -162,8 +162,7 @@ fn main() -> eyre::Result<()> {
 
     if let Some(out_bam) = args.output_bam {
         eprintln!("Generating tagged BAM.",);
-        tag_bam(&args.bam, &out_bam, &sv_events)?;
-        // bam::fs::index(out_bam)?;
+        create_tagged_bam(&args.bam, &out_bam, &sv_events)?;
     }
 
     eprintln!("Done!");
