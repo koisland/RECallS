@@ -11,11 +11,6 @@ pub struct Args {
     #[arg(short = 'i', long, default_value = "test/amplicon/chm13_chr7_sim.bam")]
     pub bam: PathBuf,
 
-    /// Genome assembly
-    // #[arg(short, long)]
-    #[arg(short, long, default_value = "test/amplicon/chm13_chr7.fa.gz")]
-    pub fa: PathBuf,
-
     /// BED file to restrict search
     #[arg(short, long)]
     pub bed: Option<PathBuf>,
@@ -48,7 +43,7 @@ pub struct Args {
     #[arg(long, default_value_t = 10_000)]
     pub inv_min_aln_len: usize,
 
-    /// Inversion indel threshold unbalanced
+    /// Inversion mismatch threshold unbalanced
     #[arg(long, default_value_t = 0.5)]
     pub inv_thr_unbalanced: f32,
 

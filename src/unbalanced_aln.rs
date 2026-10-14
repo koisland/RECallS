@@ -148,7 +148,7 @@ mod test {
             if !reads.contains(name) {
                 continue;
             }
-            let read_markers = collect_read_markers(&rec, st, end, &null_lapper)?;
+            let read_markers = collect_read_markers(&rec, st, end, &null_lapper, todo!())?;
             let marker_pos = if read_markers.n_mismatches < 5 {
                 vec![]
             } else {

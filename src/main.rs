@@ -1,8 +1,4 @@
-use std::{
-    collections::{HashMap, HashSet},
-    fs::File,
-    io::{BufWriter, Write},
-};
+use std::collections::{HashMap, HashSet};
 
 use clap::Parser;
 use eyre::ContextCompat;
@@ -16,11 +12,8 @@ use crate::{
     call::detect_events,
     cli::Args,
     events::{Event, MismatchSignal, SVType, Signal},
-    io::{
-        aligned_intervals_windows, read_bed, read_indel_read_stats,
-        write_indel_read_stats,
-    },
-    utils::{merge_intervals, overlap_length},
+    io::{aligned_intervals_windows, read_bed, read_indel_read_stats, write_indel_read_stats},
+    utils::merge_intervals,
 };
 
 mod baseline;
@@ -36,7 +29,6 @@ fn main() -> eyre::Result<()> {
     let args = Args::parse();
 
     let bam = &args.bam;
-    let fa = &args.fa;
     let output_dir = &args.output_dir;
     std::fs::create_dir_all(output_dir)?;
 
@@ -248,10 +240,6 @@ fn main() -> eyre::Result<()> {
                 continue;
             }
 
-            // if !["b919a3e8-c866-4793-60d4-c8d69792fe9f", "30580116-9da2-f84f-b0c8-46b140978a73"].contains(&&itv_msignal.val.read[..]) {
-            //     continue;
-            // }
-
             let other_msignals_same_read = &read_mismatch_signals[&itv_msignal.val.read[..]];
 
             // Check overlap of current position
@@ -275,7 +263,7 @@ fn main() -> eyre::Result<()> {
             if shared_reads.len() != 2 {
                 continue;
             }
-            let shared_reads_str = shared_reads.iter().join("_");
+            let shared_reads_str = shared_reads.iter().join("/");
 
             ovl.retain(|itv| shared_reads.contains(&&itv.val.read[..]));
             ovl_sec.retain(|itv| shared_reads.contains(&&itv.val.read[..]));
@@ -302,42 +290,35 @@ fn main() -> eyre::Result<()> {
                 continue;
             }
 
-            // println!("{}\t{}\t{}", chrom, itv_msignal.start, itv_msignal.stop);
-            // println!("1. {ovl:?}");
-            // println!("2. {ovl_sec:?}");
+            println!(
+                "{chrom}\t{}\t{}\t{chrom}\t{}\t{}\t{}",
+                ovl[0].start, ovl[0].stop, ovl_sec[0].start, ovl_sec[0].stop, shared_reads_str,
+            )
 
-            // println!(
-            //     "{chrom}\t{}\t{}\t{chrom}\t{}\t{}\t{}",
-            //     ovl[0].start, ovl[0].stop,
-            //     ovl_sec[0].start, ovl_sec[0].stop,
-            //     shared_reads_str,
-            // )
-
-            // println!("1.");
-            for itv in ovl.iter() {
-                println!(
-                    "{}\t{}\t{}\t{:?}-{}-{}",
-                    chrom,
-                    itv.start,
-                    itv.stop,
-                    itv.val.unbalanced_dir,
-                    itv.val.is_secondary,
-                    itv.val.read
-                )
-            }
-            // println!("2.");
-            for itv in ovl_sec.iter() {
-                println!(
-                    "{}\t{}\t{}\t{:?}-{}-{}",
-                    chrom,
-                    itv.start,
-                    itv.stop,
-                    itv.val.unbalanced_dir,
-                    itv.val.is_secondary,
-                    itv.val.read
-                )
-            }
-            // If do, valid
+            // // println!("1.");
+            // for itv in ovl.iter() {
+            //     println!(
+            //         "{}\t{}\t{}\t{:?}-{}-{}",
+            //         chrom,
+            //         itv.start,
+            //         itv.stop,
+            //         itv.val.unbalanced_dir,
+            //         itv.val.is_secondary,
+            //         itv.val.read
+            //     )
+            // }
+            // // println!("2.");
+            // for itv in ovl_sec.iter() {
+            //     println!(
+            //         "{}\t{}\t{}\t{:?}-{}-{}",
+            //         chrom,
+            //         itv.start,
+            //         itv.stop,
+            //         itv.val.unbalanced_dir,
+            //         itv.val.is_secondary,
+            //         itv.val.read
+            //     )
+            // }
         }
 
         // let itree_suppl_signals = Lapper::new(suppl_signals);

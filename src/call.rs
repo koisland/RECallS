@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::{collections::HashMap, ops::Bound, path::Path};
 
 use eyre::{ContextCompat, bail};
 use itertools::Itertools;
@@ -24,6 +24,41 @@ use crate::{
 };
 
 const CLIP_OVL_DST: usize = 2000;
+
+// https://github.com/Daniel-Liu-c0deb0t/frfr/blob/e07781cd4f43877a3aba8d0bc42217b4419a8a67/src/lib.rs#L249-L260
+static LUT: [u8; 128] = {
+    let mut l = [0u8; 128];
+    l[b'A' as usize] = 0b00;
+    l[b'a' as usize] = 0b00;
+    l[b'C' as usize] = 0b01;
+    l[b'c' as usize] = 0b01;
+    l[b'G' as usize] = 0b10;
+    l[b'g' as usize] = 0b10;
+    l[b'T' as usize] = 0b11;
+    l[b't' as usize] = 0b11;
+    l
+};
+
+static NT_ORDER: [u8; 4] = [b'A', b'C', b'G', b'T'];
+
+pub(crate) struct NtCounts(pub(crate) [usize; 4]);
+
+impl NtCounts {
+    // #[inline]
+    // fn get_nt(&self, nt: u8) -> usize {
+    //     self.0[LUT[nt as usize] as usize]
+    // }
+
+    #[inline]
+    fn top_nt(&self) -> (u8, usize) {
+        self.0
+            .iter()
+            .enumerate()
+            .max_by(|a, b| a.1.cmp(b.1))
+            .map(|(idx, cnt)| (NT_ORDER[idx], *cnt))
+            .expect("Will never be empty")
+    }
+}
 
 type SARecord<'a> = (&'a str, &'a str, &'a str, &'a str, &'a str, &'a str);
 
@@ -70,8 +105,10 @@ pub fn collect_read_markers(
     st: usize,
     end: usize,
     itree_ignore: &Lapper<usize, String>,
+    secondary_snv_counts: &HashMap<usize, NtCounts>,
 ) -> eyre::Result<ReadMarkers> {
     let cg = rec.cigar();
+    let seq = rec.sequence();
     let qscores = rec.quality_scores().as_bytes();
     let mut marker_qpos = vec![];
     let mut n_mismatches: usize = 0;
@@ -94,9 +131,22 @@ pub fn collect_read_markers(
                 for _ in ref_pos..(ref_pos + l) {
                     qpos += 1
                 }
-                // Must have mismatch
+                // Must not be in ignored region
+                // Base QV must be 99.9% accurate
+                // Mismatched base must be top secondary nt
                 if check_valid_itv(ref_pos, st, end, itree_ignore)
                     && qscores.get(qpos).cloned().unwrap_or_default() > 30
+                    && seq
+                        .get(qpos)
+                        .and_then(|nt| {
+                            secondary_snv_counts
+                                .get(&ref_pos)
+                                .map(|nt_cnts| (nt, nt_cnts))
+                        })
+                        .is_some_and(|(nt, nt_cnts)| {
+                            let (top_nt, _top_nt_cnt) = nt_cnts.top_nt();
+                            top_nt == nt
+                        })
                 {
                     n_mismatches += 1;
                     marker_qpos.push(qpos as f64);
@@ -110,7 +160,6 @@ pub fn collect_read_markers(
                 if check_valid_itv(ref_pos, st, end, itree_ignore) {
                     for _ in ref_pos..(ref_pos + l) {
                         n_indels += 1;
-                        // marker_qpos.push(qpos as f64);
                     }
                 }
                 qpos += l;
@@ -119,7 +168,6 @@ pub fn collect_read_markers(
                 if check_valid_itv(ref_pos, st, end, itree_ignore) {
                     for _ in ref_pos..(ref_pos + l) {
                         n_indels += 1;
-                        // marker_qpos.push(qpos as f64);
                     }
                 }
                 ref_pos += l
@@ -231,22 +279,100 @@ fn assign_type_by_clip_direction(
             // |  >| |<  |
             (true, Direction::Right, Direction::Left) |
             (false, Direction::Left, Direction::Right) => {
-                // let n_similar = itree_self_similar.count(sa_start, sa_start+sa_aln_len);
-                // if n_similar != 0 {
-                //     let event = SupplSignal {
-                //         chrom: chrom.to_owned(),
-                //         start: rst,
-                //         stop: rend,
-                //         suppl_start: sa_start,
-                //         suppl_stop: sa_end,
-                //         rname: String::from_utf8(rname.to_vec())?,
-                //     };
-                //     // TODO: Dedup due to two suppl alns
-                //     events.push(Event::Deletion(event));
-                // }
                 Some(SVType::Deletion)
             }
         }
+}
+
+fn get_secondary_snv_counts(
+    bam: &Path,
+    region: &Region,
+    itree_ignore: &Lapper<usize, String>,
+) -> eyre::Result<HashMap<usize, NtCounts>> {
+    let mut fh = bam::io::indexed_reader::Builder::default().build_from_path(bam)?;
+    let header = fh.read_header()?;
+    // Collect SNVs across secondary alignments
+    // Effectively SNVs of other repeats that can help detect if recombination event occurs
+    let mut mismatch_pos_cnts = HashMap::new();
+    let query = fh.query(&header, &region)?;
+    let (Bound::Included(st), Bound::Included(end)) = (
+        region.start().map(|v| v.get()),
+        region.end().map(|v| v.get()),
+    ) else {
+        unreachable!("Cannot get region bounds: {region:?}")
+    };
+
+    for rec in query
+        .records()
+        .flatten()
+        .filter(|rec| rec.flags().contains(Flags::SECONDARY))
+    {
+        let cg = rec.cigar();
+        let seq = rec.sequence();
+        let qscores = rec.quality_scores().as_bytes();
+        let (rst, rend) = (
+            rec.alignment_start().unwrap().map(|p| p.get())?,
+            rec.alignment_end().unwrap().map(|p| p.get())?,
+        );
+        let aln_len = rend - rst;
+        let aln_len_f = aln_len as f64;
+
+        // Ignore if read overlaps majority of any ignored region.
+        if itree_ignore.find(rst, rend).any(|ovl| {
+            let ovl_len = overlap_length(rst, rend, ovl.start, ovl.stop) as f64;
+            (ovl_len / aln_len_f) > 0.5
+        }) {
+            continue;
+        }
+
+        let mut ref_pos: usize = rec
+            .alignment_start()
+            .with_context(|| format!("No alignment start for {rec:?}"))??
+            .get();
+        let mut qpos: usize = 0;
+
+        for (op, l) in cg.iter().flatten().map(|op| (op.kind(), op.len())) {
+            match op {
+                Kind::Match | Kind::SequenceMatch => {
+                    for _ in ref_pos..(ref_pos + l) {
+                        qpos += 1
+                    }
+                    ref_pos += l
+                }
+                Kind::SequenceMismatch => {
+                    for _ in ref_pos..(ref_pos + l) {
+                        qpos += 1
+                    }
+                    // Must have mismatch
+                    if check_valid_itv(ref_pos, st, end, itree_ignore)
+                        && qscores.get(qpos).cloned().unwrap_or_default() > 30
+                        && let Some(nt) = seq.get(qpos)
+                    {
+                        mismatch_pos_cnts
+                            .entry(ref_pos)
+                            .and_modify(|nt_cnts: &mut NtCounts| {
+                                // Get LUT value for nt (A=0=00, C=1=01, G=2=10, T=3=11)
+                                nt_cnts.0[LUT[nt as usize] as usize] += 1;
+                            })
+                            .or_insert_with(|| NtCounts([0; 4]));
+                    }
+                    ref_pos += l
+                }
+                Kind::Pad | Kind::SoftClip => {
+                    qpos += l;
+                }
+                Kind::Insertion => {
+                    qpos += l;
+                }
+                Kind::Deletion => ref_pos += l,
+                Kind::HardClip => {
+                    continue;
+                }
+                Kind::Skip => ref_pos += l,
+            }
+        }
+    }
+    Ok(mismatch_pos_cnts)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -270,13 +396,15 @@ pub fn detect_events(
         Position::new(itv.start.clamp(1, usize::MAX)).unwrap()..=Position::new(itv.stop).unwrap(),
     );
     let inv_min_aln_len = inv_min_aln_len as f64;
-    // Get intervaltree of ignored regions
-    let query = fh.query(&header, &region)?;
 
     let indel_read_stats = [&read_stats.primary, &read_stats.secondary];
     let mut events = vec![];
     let mut sa_itvs = vec![];
 
+    // Get secondary read SNVs in region
+    let secondary_snv_counts = get_secondary_snv_counts(bam, &region, itree_ignore)?;
+
+    let query = fh.query(&header, &region)?;
     for rec in query.records().flatten() {
         let read = rec.name().unwrap();
         let cg = rec.cigar();
@@ -301,7 +429,8 @@ pub fn detect_events(
         // Look for:
         // * unbalanced reads bordered by large indels. check secondary alignment
         // * supplementary alignments on same chrom (for now)
-        let read_markers = collect_read_markers(&rec, st, end, itree_ignore)?;
+        let read_markers =
+            collect_read_markers(&rec, st, end, itree_ignore, &secondary_snv_counts)?;
         let indel_rate_zscore = typ_read_stats.zscore(read_markers.n_indels as f64 / aln_len_f);
         let unbalanced_summary = is_unbalanced_alignment(
             &read_markers.pos,
