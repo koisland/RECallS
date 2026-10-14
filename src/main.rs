@@ -1,8 +1,11 @@
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::HashMap,
+    fs::File,
+    io::{BufWriter, Write},
+};
 
 use clap::Parser;
 use eyre::ContextCompat;
-use itertools::Itertools;
 use noodles::bam::{self};
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use rust_lapper::{Interval, Lapper};
@@ -11,9 +14,10 @@ use crate::{
     baseline::aggregate_stats_indel_rate,
     call::detect_events,
     cli::Args,
-    events::{Event, MismatchSignal, SVType, Signal},
+    events::{Event, Signal},
     io::{aligned_intervals_windows, read_bed, read_indel_read_stats, write_indel_read_stats},
-    utils::merge_intervals,
+    postprocess::postprocess_events,
+    tag::tag_bam,
 };
 
 mod baseline;
@@ -21,6 +25,7 @@ mod call;
 mod cli;
 mod events;
 mod io;
+mod postprocess;
 mod tag;
 mod unbalanced_aln;
 mod utils;
@@ -111,26 +116,31 @@ fn main() -> eyre::Result<()> {
                 }
             }
         })
-        .fold(HashMap::new, |mut acc: HashMap<String, Vec<Event>>, x| {
-            // empty window with no events
-            if x.is_empty() {
-                return acc;
-            }
-            let chrom = match &x[0] {
-                Event::SV(sv) => &sv.itv.val,
-                Event::Signal(Signal::MismatchSignal(msignal)) => &msignal.itv.val,
-                Event::Signal(Signal::SupplSignal(ssignal)) => &ssignal.chrom,
-            };
+        .fold(
+            HashMap::new,
+            |mut acc: HashMap<String, Vec<Event>>, events| {
+                // empty window with no events
+                if events.is_empty() {
+                    return acc;
+                }
+                // Store by chromosome
+                let chrom = match &events[0] {
+                    Event::SV(sv) => &sv.itv.val,
+                    Event::Signal(Signal::MismatchSignal(msignal)) => &msignal.itv.val,
+                    Event::Signal(Signal::SupplSignal(ssignal)) => &ssignal.chrom,
+                };
 
-            if let Some(events) = acc.get_mut(chrom) {
-                events.extend(x);
-            } else {
-                acc.insert(chrom.to_owned(), x);
-            }
+                if let Some(chrom_events) = acc.get_mut(chrom) {
+                    chrom_events.extend(events);
+                } else {
+                    acc.insert(chrom.to_owned(), events);
+                }
 
-            acc
-        })
+                acc
+            },
+        )
         .reduce(HashMap::new, |mut a, b| {
+            // Reduce hashmap per window of chrom events into one hashmap
             for (chrom, other_events) in b.into_iter() {
                 if let Some(events) = a.get_mut(&chrom) {
                     events.extend(other_events);
@@ -141,199 +151,20 @@ fn main() -> eyre::Result<()> {
             a
         });
 
-    // Merge overlapping reads
-    for (chrom, events) in read_events.iter() {
-        // Complete events
-        let mut inversion_events: Vec<Interval<usize, HashSet<&str>>> = vec![];
-        let mut deletion_events: Vec<Interval<usize, HashSet<&str>>> = vec![];
-
-        // Create itree of events split by type
-        let mut suppl_signals: Vec<Interval<usize, &str>> = vec![];
-        let mut mismatch_signals: Vec<Interval<usize, &MismatchSignal>> = vec![];
-        let mut read_mismatch_signals: HashMap<&str, Vec<Interval<usize, &MismatchSignal>>> =
-            HashMap::new();
-        for event in events.iter() {
-            match event {
-                Event::SV(sv) => match sv.typ {
-                    SVType::Deletion => {
-                        deletion_events.push(Interval {
-                            start: sv.itv.start,
-                            stop: sv.itv.stop,
-                            val: HashSet::from_iter([&sv.read[..]]),
-                        });
-                    }
-                    SVType::Inversion => {
-                        inversion_events.push(Interval {
-                            start: sv.itv.start,
-                            stop: sv.itv.stop,
-                            val: HashSet::from_iter([&sv.read[..]]),
-                        });
-                    }
-                },
-                Event::Signal(Signal::MismatchSignal(msignal)) => {
-                    mismatch_signals.push(Interval {
-                        start: msignal.itv.start,
-                        stop: msignal.itv.stop,
-                        val: msignal,
-                    });
-                    read_mismatch_signals
-                        .entry(&msignal.read)
-                        .and_modify(|itv| {
-                            itv.push(Interval {
-                                start: msignal.itv.start,
-                                stop: msignal.itv.stop,
-                                val: msignal,
-                            })
-                        })
-                        .or_insert_with(|| {
-                            vec![Interval {
-                                start: msignal.itv.start,
-                                stop: msignal.itv.stop,
-                                val: msignal,
-                            }]
-                        });
-                }
-                Event::Signal(Signal::SupplSignal(ssignal)) => {
-                    suppl_signals.push(Interval {
-                        start: ssignal.itv.start,
-                        stop: ssignal.itv.stop,
-                        val: &ssignal.read,
-                    });
-                }
-            }
+    let sv_events = postprocess_events(read_events);
+    let output_bed = output_dir.join("calls.bed");
+    let mut output_bed_fh = BufWriter::new(File::create(output_bed)?);
+    for events in sv_events.values() {
+        for event in events {
+            writeln!(&mut output_bed_fh, "{}", event.as_bed())?;
         }
-        // Merge complete events
-        let merged_inversion_events = merge_intervals(
-            inversion_events.into_iter(),
-            1,
-            |_a, _b| true,
-            |a, b| a.val.iter().chain(b.val.iter()).cloned().collect(),
-        );
-        let merged_deletion_events = merge_intervals(
-            deletion_events.into_iter(),
-            1,
-            |_a, _b| true,
-            |a, b| a.val.iter().chain(b.val.iter()).cloned().collect(),
-        );
-        // for itv in merged_inversion_events.iter() {
-        //     println!(
-        //         "{chrom}\t{}\t{}\t{}",
-        //         itv.start,
-        //         itv.stop,
-        //         itv.val.iter().sorted().join(",")
-        //     )
-        // }
-        // for itv in merged_deletion_events.iter() {
-        //     println!(
-        //         "{chrom}\t{}\t{}\t{}",
-        //         itv.start,
-        //         itv.stop,
-        //         itv.val.iter().sorted().join(",")
-        //     )
-        // }
-
-        // Partition by self-similar reads
-        let itree_mismatch_events = Lapper::new(mismatch_signals);
-        let mut eval_reads: HashSet<&str> = HashSet::new();
-        for itv_msignal in itree_mismatch_events.iter() {
-            if eval_reads.contains(&itv_msignal.val.read[..]) {
-                continue;
-            }
-
-            let other_msignals_same_read = &read_mismatch_signals[&itv_msignal.val.read[..]];
-
-            // Check overlap of current position
-            // Do they have no unbalanced overlap
-            let mut ovl = itree_mismatch_events
-                .find(itv_msignal.start, itv_msignal.stop)
-                .collect_vec();
-            let ovl_reads: HashSet<&str> = ovl.iter().map(|itv| &itv.val.read[..]).collect();
-
-            // Check overlap with other positions
-            // Do they have no unbalanced overlap
-            let mut ovl_sec = other_msignals_same_read
-                .iter()
-                .filter(|itv| *itv != itv_msignal)
-                .flat_map(|itv| itree_mismatch_events.find(itv.start, itv.stop))
-                .collect_vec();
-            let ovl_sec_reads: HashSet<&str> =
-                ovl_sec.iter().map(|itv| &itv.val.read[..]).collect();
-
-            let shared_reads: HashSet<_> = ovl_reads.intersection(&ovl_sec_reads).collect();
-            if shared_reads.len() != 2 {
-                continue;
-            }
-            let shared_reads_str = shared_reads.iter().join("/");
-
-            ovl.retain(|itv| shared_reads.contains(&&itv.val.read[..]));
-            ovl_sec.retain(|itv| shared_reads.contains(&&itv.val.read[..]));
-
-            eval_reads.extend(shared_reads);
-
-            let n_dir_uniq = ovl
-                .iter()
-                .map(|itv| itv.val.unbalanced_dir)
-                .unique()
-                .count();
-            let n_dir_uniq_sec = ovl
-                .iter()
-                .map(|itv| itv.val.unbalanced_dir)
-                .unique()
-                .count();
-
-            if n_dir_uniq != 2 || n_dir_uniq_sec != 2 {
-                continue;
-            }
-
-            let has_prim = ovl.iter().any(|itv| !itv.val.is_secondary);
-            if !has_prim {
-                continue;
-            }
-
-            println!(
-                "{chrom}\t{}\t{}\t{chrom}\t{}\t{}\t{}",
-                ovl[0].start, ovl[0].stop, ovl_sec[0].start, ovl_sec[0].stop, shared_reads_str,
-            )
-
-            // // println!("1.");
-            // for itv in ovl.iter() {
-            //     println!(
-            //         "{}\t{}\t{}\t{:?}-{}-{}",
-            //         chrom,
-            //         itv.start,
-            //         itv.stop,
-            //         itv.val.unbalanced_dir,
-            //         itv.val.is_secondary,
-            //         itv.val.read
-            //     )
-            // }
-            // // println!("2.");
-            // for itv in ovl_sec.iter() {
-            //     println!(
-            //         "{}\t{}\t{}\t{:?}-{}-{}",
-            //         chrom,
-            //         itv.start,
-            //         itv.stop,
-            //         itv.val.unbalanced_dir,
-            //         itv.val.is_secondary,
-            //         itv.val.read
-            //     )
-            // }
-        }
-
-        // let itree_suppl_signals = Lapper::new(suppl_signals);
     }
 
-    // if let Some(out_bam) = args.output_bam {
-    //     eprintln!("Generating tagged BAM.",);
-    //     tag_bam(
-    //         &args.bam,
-    //         &out_bam,
-    //         &final_read_inv_events,
-    //         &final_read_del_events,
-    //     )?;
-    //     // bam::fs::index(out_bam)?;
-    // }
+    if let Some(out_bam) = args.output_bam {
+        eprintln!("Generating tagged BAM.",);
+        tag_bam(&args.bam, &out_bam, &sv_events)?;
+        // bam::fs::index(out_bam)?;
+    }
 
     eprintln!("Done!");
 

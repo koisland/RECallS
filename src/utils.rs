@@ -26,7 +26,7 @@ pub fn merge_intervals<I, T>(
     intervals: I,
     dst: usize,
     fn_cmp: impl Fn(&Interval<usize, T>, &Interval<usize, T>) -> bool,
-    fn_reducer: impl Fn(&Interval<usize, T>, &Interval<usize, T>) -> T,
+    fn_reducer: impl Fn(&mut Interval<usize, T>, &Interval<usize, T>),
 ) -> Vec<Interval<usize, T>>
 where
     I: Iterator<Item = Interval<usize, T>>,
@@ -45,7 +45,7 @@ where
             (dst_between <= dst) & added_check
         }) {
             prev.stop = itv.stop;
-            prev.val = fn_reducer(prev, &itv)
+            fn_reducer(prev, &itv)
         } else {
             merged.push(itv);
         }

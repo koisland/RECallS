@@ -16,25 +16,21 @@ cargo build --release
 
 Then run:
 ```bash
-./target/release/RECallS -i "${sample}.bam" -f "${sample}.fa.gz"
+./target/release/RECallS -i "${sample}.bam"
 ```
 
 ## Outputs
 Within the output directory (`-o`):
 ```
 recalls
-├── calls_del.bed
-├── calls_inv.bed
-├── calls_inv_junc.bed
+├── calls.bed
 └── chrom_indel_stats.tsv
 ```
 
 Where:
 |name|desc|
 |-|-|
-|calls_del.bed|Putative intrachromosomal deletion event breakpoints|
-|calls_inv_junc.bed|Putative intrachromosomal inversion event breakpoints|
-|calls_inv.bed|Putative intrachromosomal inversion event breakpoints|
+|calls.bed|Putative intrachromosomal inversion and deletion events|
 |chrom_indel_stats.tsv|Chromosome read indel stats for primary and secondary alignments|
 
 ## Docs
@@ -52,6 +48,5 @@ Then to run:
 ```bash
 ./target/release/RECallS \
 -i test/amplicon/chm13_chr7_sim.bam \
--f test/amplicon/chm13_chr7.fa.gz \
 -n "test/amplicon/chm13_chr7_lcr.bed"
 ```

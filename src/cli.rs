@@ -15,6 +15,7 @@ pub struct Args {
     #[arg(short, long)]
     pub bed: Option<PathBuf>,
 
+    /// Output directory
     #[arg(short, long, default_value = "./recalls")]
     pub output_dir: PathBuf,
 

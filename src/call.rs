@@ -39,7 +39,7 @@ static LUT: [u8; 128] = {
     l
 };
 
-static NT_ORDER: [u8; 4] = [b'A', b'C', b'G', b'T'];
+static NT_ORDER: [u8; 4] = *b"ACGT";
 
 pub(crate) struct NtCounts(pub(crate) [usize; 4]);
 
@@ -56,7 +56,7 @@ impl NtCounts {
             .enumerate()
             .max_by(|a, b| a.1.cmp(b.1))
             .map(|(idx, cnt)| (NT_ORDER[idx], *cnt))
-            .expect("Will never be empty")
+            .expect("SAFETY: Never empty")
     }
 }
 
@@ -294,7 +294,7 @@ fn get_secondary_snv_counts(
     // Collect SNVs across secondary alignments
     // Effectively SNVs of other repeats that can help detect if recombination event occurs
     let mut mismatch_pos_cnts = HashMap::new();
-    let query = fh.query(&header, &region)?;
+    let query = fh.query(&header, region)?;
     let (Bound::Included(st), Bound::Included(end)) = (
         region.start().map(|v| v.get()),
         region.end().map(|v| v.get()),
@@ -641,7 +641,7 @@ pub fn detect_events(
                         stop: itv_span.stop,
                         val: chrom.to_owned(),
                     },
-                    read: itv_1.val.read.clone(),
+                    reads: [Some(itv_1.val.read.clone()), None],
                     typ: putative_type_1,
                 }));
             }
@@ -659,7 +659,7 @@ pub fn detect_events(
                             stop: span.stop,
                             val: chrom.to_owned(),
                         },
-                        read: sitv.val.read.clone(),
+                        reads: [Some(sitv.val.read.clone()), None],
                         typ: putative_type,
                     }));
                 }

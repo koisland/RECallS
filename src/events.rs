@@ -1,3 +1,4 @@
+use itertools::Itertools;
 use rust_lapper::Interval;
 
 use crate::{call::SupplIntervalSignals, utils::Direction};
@@ -18,25 +19,6 @@ pub struct MismatchSignal {
     pub unbalanced_dir: Direction,
     pub unbalanced_span: Interval<usize, ()>,
 }
-impl MismatchSignal {
-    pub fn header() -> &'static str {
-        "#chrom\tstart\tstop\tread_name\tn_indels\taln_len\tis_secondary\tunbalanced_dir"
-    }
-
-    pub fn as_bed(&self) -> String {
-        format!(
-            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:?}",
-            self.itv.val,
-            self.itv.start,
-            self.itv.stop,
-            self.read,
-            self.n_indels,
-            self.aln_len,
-            self.is_secondary,
-            self.unbalanced_dir
-        )
-    }
-}
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum SVType {
@@ -44,11 +26,45 @@ pub enum SVType {
     Inversion,
 }
 
+impl SVType {
+    fn color(&self) -> &'static str {
+        match self {
+            SVType::Deletion => "255,0,0",
+            SVType::Inversion => "0,0,255",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SV {
     pub itv: Interval<usize, String>,
-    pub read: String,
+    pub reads: [Option<String>; 2],
     pub typ: SVType,
+}
+
+impl SV {
+    pub fn reads(&self) -> impl Iterator<Item = &str> {
+        self.reads.iter().flatten().map(|read| &read[..])
+    }
+
+    pub fn as_bed(&self) -> String {
+        let reads = if let Some((r1, r2)) = self.reads().collect_tuple() {
+            (r1, r2)
+        } else {
+            ("", "")
+        };
+        format!(
+            "{}\t{}\t{}\t{}~{}\t0\t.\t{}\t{}\t{}",
+            self.itv.val,
+            self.itv.start,
+            self.itv.stop,
+            reads.0,
+            reads.1,
+            self.itv.start,
+            self.itv.stop,
+            self.typ.color()
+        )
+    }
 }
 
 #[derive(Debug)]
