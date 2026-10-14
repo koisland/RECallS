@@ -1,6 +1,38 @@
 # RECallS
 (R)ecombination (E)vent (call)er from (S)perm long-read sequencings data
 
+<table>
+  <tr>
+    <td>
+      <figure>
+        <img src="docs/deletion_suppl.png" width="100%">
+        <br>
+        <figcaption>
+          IGV screenshot of <b>simulated deletion</b> detected via supplementary read alignments
+        </figcaption>
+      </figure>
+    </td>
+    <td>
+      <figure>
+        <img src="docs/inversion_suppl.png" width="100%">
+        <br>
+        <figcaption>
+          IGV screenshot of <b>simulated inversion</b> detected via supplementary read alignments
+        </figcaption>
+      </figure>
+    </td>
+    <td>
+      <figure>
+        <img src="docs/inversion_mismatch.png" width="100%">
+        <br>
+        <figcaption>
+          IGV screenshot of <b>simulated inversion</b> detected via SNVs in secondary read alignments 
+        </figcaption>
+      </figure>
+    </td>
+  </tr>
+</table>
+
 ## Usage
 Align reads to donor-specific assembly.
 ```bash
