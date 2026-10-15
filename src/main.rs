@@ -75,7 +75,7 @@ fn main() -> eyre::Result<()> {
     );
     let tsv_indel_stats = output_dir.join("chrom_indel_stats.tsv");
     let chrom_read_stats = if !tsv_indel_stats.exists() {
-        let indel_stats = aggregate_stats_indel_rate(&regions, bam, &ignore_bed);
+        let indel_stats = aggregate_stats_indel_rate(bam, &regions, &ignore_bed);
         write_indel_read_stats(&indel_stats, &tsv_indel_stats)?;
         indel_stats
     } else {

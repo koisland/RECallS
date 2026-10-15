@@ -12,6 +12,7 @@ use noodles::{
 use rayon::prelude::*;
 use rust_lapper::{Interval, Lapper};
 
+/// [`IndelSummaryStats`] for primary and secondary read alignments
 #[derive(Debug, Clone)]
 pub struct ReadIndelSummaryStats {
     pub primary: IndelSummaryStats,
@@ -21,6 +22,7 @@ pub struct ReadIndelSummaryStats {
 impl Add for ReadIndelSummaryStats {
     type Output = ReadIndelSummaryStats;
 
+    /// Add two read stats. Doesn't add stdev.
     fn add(mut self, rhs: Self) -> Self::Output {
         self.primary.mean = self.primary.mean.algebraic_add(rhs.primary.mean);
         self.primary.var = self.primary.var.algebraic_add(rhs.primary.var);
@@ -33,16 +35,24 @@ impl Add for ReadIndelSummaryStats {
     }
 }
 
+/// Summary stats for indel proportion of reads
+/// * Calculated by `mean = len_indel_op / read_aln_len` so allowed to be larger than `read_aln_len`
+/// * Insertions counted
 #[derive(Debug, Default, Clone)]
 pub struct IndelSummaryStats {
+    /// Mean indel proportion
     pub mean: f64,
+    /// Variance of indel proportion
     pub var: f64,
+    /// Standard deviation of indel proportion
     pub stdev: f64,
+    /// Number of reads used in indel proportion
     pub n: usize,
 }
 
-// https://rust-lang-nursery.github.io/rust-cookbook/science/mathematics/statistics.html
 impl IndelSummaryStats {
+    /// Generate indel summary stats.
+    /// * https://rust-lang-nursery.github.io/rust-cookbook/science/mathematics/statistics.html
     pub fn new(data: &[f64]) -> Self {
         let n = data.len() as f64;
         if n == 0.0 {
@@ -65,6 +75,7 @@ impl IndelSummaryStats {
         }
     }
 
+    /// Calculate z-score of a given value.
     pub fn zscore(&self, x: f64) -> f64 {
         let diff = x - self.mean;
         diff / self.stdev
@@ -161,21 +172,25 @@ pub fn calculate_stats_indel_rate(
         }
     }
 
-    // TODO: Write out data to file
-    // for prim_perc_indel in &both_perc_indel[0] {
-    //     println!("{chrom}\tprim\t{prim_perc_indel}")
-    // }
-    // for sec_perc_indel in &both_perc_indel[1] {
-    //     println!("{chrom}\tsec\t{sec_perc_indel}")
-    // }
     let stats_prim_perc_indel = IndelSummaryStats::new(&both_perc_indel[0]);
     let stats_sec_perc_indel = IndelSummaryStats::new(&both_perc_indel[1]);
     Ok((stats_prim_perc_indel, stats_sec_perc_indel))
 }
 
+/// Aggregate read indel stats to generate baseline indel distribution for outlier detection.
+/// * Uses read indel proportion (0.0-1.0*).
+/// * Can be slightly higher since both insertions and deletions counted over read aligned length.
+/// 
+/// # Arguments
+/// * bam: path to bam
+/// * regions: all intervals
+/// * ignore_bed: regions to ignore
+/// 
+/// # Returns
+/// * map of chrom to [`ReadIndelSummaryStats`]
 pub fn aggregate_stats_indel_rate(
-    regions: &HashMap<String, Vec<Interval<usize, String>>>,
     bam: &Path,
+    regions: &HashMap<String, Vec<Interval<usize, String>>>,
     ignore_bed: &HashMap<String, Lapper<usize, String>>,
 ) -> HashMap<String, ReadIndelSummaryStats> {
     // https://stats.stackexchange.com/a/26647
