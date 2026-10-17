@@ -23,7 +23,7 @@ pub fn overlap_length(a_first: usize, a_last: usize, b_first: usize, b_last: usi
 }
 
 /// Adapted from https://github.com/logsdon-lab/rs-nucflag/blob/main/core/src/intervals.rs#L4-L14
-/// Modified fn_reducer to not create new T 
+/// Modified fn_reducer to not create new T
 pub fn merge_intervals<I, T>(
     intervals: I,
     dst: usize,

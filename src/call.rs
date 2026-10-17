@@ -88,13 +88,13 @@ fn get_clip_direction(cg: impl Iterator<Item = Op>) -> Option<Direction> {
 }
 
 /// Check if given position overlaps a given interval and is not an ignored position.
-/// 
+///
 /// # Arguments
 /// * ref_pos: evaluated position in reference
 /// * st: start position of checked interval
 /// * end: end position of checked interval
 /// * itree_ignore: interval tree of ignored intervals
-/// 
+///
 /// # Returns
 /// * If valid.
 #[inline]
@@ -123,14 +123,14 @@ pub struct ReadMarkers {
 /// * Only gets mismatch positions ([`ReadMarkers::pos`]) that are the top count in `secondary_snv_counts`.
 ///     * Secondary alignments in segdups are often other reads from paralogs.
 ///     * Therefore, if the read has mismatches matching the top secondary read count, indicates a potential inversion where an alignment was forced.
-/// 
+///
 /// # Argument
 /// * rec: BAM record
 /// * st: Start position of BAM query
 /// * end: End position of BAM query
 /// * itree_ignore: Interval tree of ignored regions
 /// * secondary_snv_counts: map of reference position to secondary read nucleotide counts
-/// 
+///
 /// # Returns
 /// * [`ReadMarkers`] for a read.
 pub fn collect_read_markers(
@@ -218,7 +218,7 @@ pub fn collect_read_markers(
     })
 }
 
-/// Supplementary interval signals. Represents the paired intervals of supplementary alignment and their directions. 
+/// Supplementary interval signals. Represents the paired intervals of supplementary alignment and their directions.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SupplIntervalSignals {
     /// Chromosome name
@@ -234,7 +234,7 @@ pub struct SupplIntervalSignals {
 impl SupplIntervalSignals {
     /// Get breakpoints based on direction.
     /// * If supplementary alignments on both ends, default to the end that minimizes the length of the interval.
-    /// 
+    ///
     /// # Returns
     /// * tuple of start and stop position
     pub fn breakpoints(&self) -> (usize, usize) {
@@ -262,7 +262,7 @@ impl SupplIntervalSignals {
     }
 
     /// Get span of supplementary alignment breakpoints.
-    /// 
+    ///
     /// # Returns
     /// * [`Interval`] with [`Interval::val`] representing spanned length.
     pub fn span(&self) -> Interval<usize, usize> {
@@ -277,25 +277,25 @@ impl SupplIntervalSignals {
 }
 
 /// Assign a [`SVType`] by read clipping direction.
-/// 
+///
 /// * For inversion, expect both ends to be in same clipping direction
 /// ```ignore
 /// |x >|              |< *|
 ///     |< *|      |x >|
 /// ```
-/// 
+///
 /// * For deletion, ends will be in opposing directions.
 /// ```ignore
 /// |x >|      |< *|
 /// |* >|      |< x|
 /// ```
-/// 
+///
 /// * If not one of these, omit.
-/// 
+///
 /// # Arguments
 /// * itv: primary alignment and direction
 /// * suppl_itv: supplementary alignment interval and direction
-/// 
+///
 /// # Returns
 /// * Clip direction, if any. Invalid direction pairs are omitted.
 fn assign_type_by_clip_direction(
@@ -335,12 +335,12 @@ fn assign_type_by_clip_direction(
 /// Get secondary read alignment SNV nucleotide counts.
 /// * Enables filtering of primary alignment SNVs that may be due to a inversion
 /// * Has hard-coded QV filter of 30 on mismatches
-/// 
+///
 /// # Arguments
 /// * bam: BAM file
 /// * region: region to query
 /// * itree_ignore: Regions to ignore. If read has majority overlap with a region, is filtered.
-/// 
+///
 /// # Returns
 /// * map of reference position to SNV counts for secondary alignments
 fn get_secondary_snv_counts(
@@ -442,8 +442,8 @@ fn get_secondary_snv_counts(
 /// 5. Filter mismatch markers that correspond to the largest secondary SNV counts at a given position
 /// 6. If the read is part of a supplementary alignment, check to make sure that orientation of clipping make sense for an inversion/deletion.
 /// 7. Find overlaps of supplementary alignment breakpoints.
-/// 8. Filter supplementary event pairs that are not reciprocal. i.e. both ends need to have a breakpoint spanning each other + 2kbp 
-/// 
+/// 8. Filter supplementary event pairs that are not reciprocal. i.e. both ends need to have a breakpoint spanning each other + 2kbp
+///
 /// # Arguments
 /// * bam: BAM file
 /// * itv: interval to query
@@ -455,7 +455,7 @@ fn get_secondary_snv_counts(
 ///   side of a read to consider a read unbalanced for inversions
 /// * inv_min_num_snvs: threshold in minimum required number of SNVs to consider read for inversions
 /// * del_min_mapq: threshold MAPQ of read for deletions
-/// 
+///
 /// # Returns
 /// * All putative [`Event`]s in this window.
 #[allow(clippy::too_many_arguments)]
@@ -721,7 +721,7 @@ pub fn detect_events(
                         stop: itv_span.stop,
                         val: chrom.to_owned(),
                     },
-                    reads: [Some(itv_1.val.read.clone()), None],
+                    reads: vec![itv_1.val.read.clone()],
                     typ: putative_type_1,
                 }));
             }
@@ -739,7 +739,7 @@ pub fn detect_events(
                             stop: span.stop,
                             val: chrom.to_owned(),
                         },
-                        reads: [Some(sitv.val.read.clone()), None],
+                        reads: vec![sitv.val.read.clone()],
                         typ: putative_type,
                     }));
                 }

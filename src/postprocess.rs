@@ -12,14 +12,14 @@ use crate::{
 /// 1. Store mismatch signals by read name for secondary alignments
 /// 2. Merge complete events split by type found in a single window. (suppl inversions/deletions)
 /// 3. For each msignal (inversion):
-///     1. Find overlaps between other mismatch signals 
-///     2. For the same read msignal, get secondary msignals and find overlaps between other mismatch signals 
+///     1. Find overlaps between other mismatch signals
+///     2. For the same read msignal, get secondary msignals and find overlaps between other mismatch signals
 ///     3. Check that both overlap sets (primary/secondary) share at least two reads.
 ///     4. Check that at least two unique unbalanced directions in both sets. Likely complentary
-/// 
+///
 /// # Arguments
 /// * read_events: map of chromosome and events
-/// 
+///
 /// # Returns
 /// * map of chromsome and SVs.
 pub fn postprocess_events(read_events: HashMap<String, Vec<Event>>) -> HashMap<String, Vec<SV>> {
@@ -43,14 +43,14 @@ pub fn postprocess_events(read_events: HashMap<String, Vec<Event>>) -> HashMap<S
                         deletion_events.push(Interval {
                             start: sv.itv.start,
                             stop: sv.itv.stop,
-                            val: HashSet::from_iter(sv.reads()),
+                            val: HashSet::from_iter(sv.reads.iter().map(|s| &s[..])),
                         });
                     }
                     SVType::Inversion => {
                         inversion_events.push(Interval {
                             start: sv.itv.start,
                             stop: sv.itv.stop,
-                            val: HashSet::from_iter(sv.reads()),
+                            val: HashSet::from_iter(sv.reads.iter().map(|s| &s[..])),
                         });
                     }
                 },
@@ -100,41 +100,27 @@ pub fn postprocess_events(read_events: HashMap<String, Vec<Event>>) -> HashMap<S
             |_a, _b| true,
             |a, b| a.val.extend(b.val.iter()),
         );
-        svs.extend(merged_inversion_events.into_iter().map(|itv| {
-            SV {
-                itv: Interval {
-                    start: itv.start,
-                    stop: itv.stop,
-                    val: chrom.clone(),
-                },
-                reads: itv
-                    .val
-                    .into_iter()
-                    .map(|read| Some(read.to_owned()))
-                    .collect_array()
-                    .expect("More than 2 reads in merged inversion event"),
-                typ: SVType::Inversion,
-            }
+        svs.extend(merged_inversion_events.into_iter().map(|itv| SV {
+            itv: Interval {
+                start: itv.start,
+                stop: itv.stop,
+                val: chrom.clone(),
+            },
+            reads: itv.val.into_iter().map(String::from).collect(),
+            typ: SVType::Inversion,
         }));
-        svs.extend(merged_deletion_events.into_iter().map(|itv| {
-            SV {
-                itv: Interval {
-                    start: itv.start,
-                    stop: itv.stop,
-                    val: chrom.clone(),
-                },
-                reads: itv
-                    .val
-                    .into_iter()
-                    .map(|read| Some(read.to_owned()))
-                    .collect_array()
-                    .expect("More than 2 reads in merged deletion event"),
-                typ: SVType::Deletion,
-            }
+        svs.extend(merged_deletion_events.into_iter().map(|itv| SV {
+            itv: Interval {
+                start: itv.start,
+                stop: itv.stop,
+                val: chrom.clone(),
+            },
+            reads: itv.val.into_iter().map(String::from).collect(),
+            typ: SVType::Deletion,
         }));
 
         // TODO
-        log::debug!("Supplementary signal length: {}",suppl_signals.len());
+        log::debug!("Supplementary signal length: {}", suppl_signals.len());
 
         let itree_mismatch_events = Lapper::new(mismatch_signals);
         // Ignore read if used already
@@ -199,22 +185,14 @@ pub fn postprocess_events(read_events: HashMap<String, Vec<Event>>) -> HashMap<S
 
             let min_stop = std::cmp::min(ovl[0].stop, ovl_sec[0].stop);
             let max_start = std::cmp::max(ovl[0].start, ovl_sec[0].start);
-            let Some(reads) = shared_reads
-                .iter()
-                .sorted()
-                .map(|read| Some(read.to_string()))
-                .collect_array()
-            else {
-                log::debug!("More than 2 reads: {shared_reads:?} for {itv_msignal:?}");
-                continue;
-            };
+
             let inversion = SV {
                 itv: Interval {
                     start: min_stop,
                     stop: max_start,
                     val: chrom.clone(),
                 },
-                reads,
+                reads: shared_reads.iter().map(|s| String::from(**s)).collect(),
                 typ: SVType::Inversion,
             };
             svs.push(inversion);
