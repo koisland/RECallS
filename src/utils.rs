@@ -8,8 +8,8 @@ pub enum Direction {
     Both,
 }
 
-#[inline]
 // Adapted from https://github.com/chaimleib/intervaltree/blob/1bc406e1f441577c4e421fc51aba2ab67fbd97fb/intervaltree/interval.py#L56
+#[inline]
 pub fn overlap_length(a_first: usize, a_last: usize, b_first: usize, b_last: usize) -> usize {
     // No overlap
     if !(a_first < b_last && a_last > b_first) {
@@ -22,6 +22,8 @@ pub fn overlap_length(a_first: usize, a_last: usize, b_first: usize, b_last: usi
     min_end - max_st
 }
 
+/// Adapted from https://github.com/logsdon-lab/rs-nucflag/blob/main/core/src/intervals.rs#L4-L14
+/// Modified fn_reducer to not create new T 
 pub fn merge_intervals<I, T>(
     intervals: I,
     dst: usize,

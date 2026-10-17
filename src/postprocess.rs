@@ -8,9 +8,23 @@ use crate::{
     utils::merge_intervals,
 };
 
+/// Postprocess candidate signals/events.
+/// 1. Store mismatch signals by read name for secondary alignments
+/// 2. Merge complete events split by type found in a single window. (suppl inversions/deletions)
+/// 3. For each msignal (inversion):
+///     1. Find overlaps between other mismatch signals 
+///     2. For the same read msignal, get secondary msignals and find overlaps between other mismatch signals 
+///     3. Check that both overlap sets (primary/secondary) share at least two reads.
+///     4. Check that at least two unique unbalanced directions in both sets. Likely complentary
+/// 
+/// # Arguments
+/// * read_events: map of chromosome and events
+/// 
+/// # Returns
+/// * map of chromsome and SVs.
 pub fn postprocess_events(read_events: HashMap<String, Vec<Event>>) -> HashMap<String, Vec<SV>> {
     let mut chrom_svs = HashMap::new();
-    // Merge overlapping reads
+
     for (chrom, events) in read_events {
         let mut svs = vec![];
         // Complete events
@@ -119,6 +133,9 @@ pub fn postprocess_events(read_events: HashMap<String, Vec<Event>>) -> HashMap<S
             }
         }));
 
+        // TODO
+        log::debug!("Supplementary signal length: {}",suppl_signals.len());
+
         let itree_mismatch_events = Lapper::new(mismatch_signals);
         // Ignore read if used already
         let mut eval_reads: HashSet<&str> = HashSet::new();
@@ -158,6 +175,7 @@ pub fn postprocess_events(read_events: HashMap<String, Vec<Event>>) -> HashMap<S
 
             // Of the shared reads, are they complementary in their balance direction?
             // Is there a read that is unbalanced on the left and one on the right?
+            // TODO: Should probably be sorted and check that makes sense
             let n_dir_uniq = ovl
                 .iter()
                 .map(|itv| itv.val.unbalanced_dir)
@@ -187,7 +205,7 @@ pub fn postprocess_events(read_events: HashMap<String, Vec<Event>>) -> HashMap<S
                 .map(|read| Some(read.to_string()))
                 .collect_array()
             else {
-                eprintln!("More than 2 reads: {shared_reads:?} for {itv_msignal:?}");
+                log::debug!("More than 2 reads: {shared_reads:?} for {itv_msignal:?}");
                 continue;
             };
             let inversion = SV {

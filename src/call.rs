@@ -684,8 +684,8 @@ pub fn detect_events(
             continue;
         }
         if ovl_itvs.len() > 2 {
-            eprintln!("More overlaps than expected for itv: {itv:?}");
-            eprintln!("{ovl_itvs:#?}");
+            log::debug!("More overlaps than expected for itv: {itv:?}");
+            log::debug!("{ovl_itvs:#?}");
             continue;
         }
 
@@ -700,7 +700,7 @@ pub fn detect_events(
                     assign_type_by_clip_direction(&itv_1.val.itv, &itv_1.val.suppl_itv);
                 let putative_type_2 =
                     assign_type_by_clip_direction(&itv_2.val.itv, &itv_2.val.suppl_itv);
-                eprintln!(
+                log::debug!(
                     "{:?},{itv:?}\n\t{putative_type_1:?},{putative_type_2:?},{},{}",
                     (sitv.start, sitv.stop),
                     itv_1.val.read,

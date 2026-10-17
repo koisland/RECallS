@@ -15,6 +15,16 @@ use noodles::{
 
 use crate::events::{SV, SVType};
 
+/// Creates tagged BAM.
+/// * EV tag for event with values: "Inversion" or "Deletion".
+/// 
+/// # Arguments
+/// * bam: input BAM
+/// * out_bam: output tagged BAM
+/// * events: map of events by chromosome
+/// 
+/// # Returns
+/// * Nothing
 pub fn create_tagged_bam(bam: &Path, out_bam: &Path, events: &HashMap<String, Vec<SV>>) -> eyre::Result<()> {
     let mut fh = bam::io::indexed_reader::Builder::default().build_from_path(bam)?;
     let header = fh.read_header()?;
@@ -43,7 +53,7 @@ pub fn create_tagged_bam(bam: &Path, out_bam: &Path, events: &HashMap<String, Ve
         },
     );
 
-    // TODO: Parallelize
+    // Write records
     for region in header
         .reference_sequences()
         .into_iter()

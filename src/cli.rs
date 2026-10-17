@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use clap::Parser;
+use log::Level;
 
 /// Detect putative intrachromosomal recombination events from long-read sequencing of sperm data
 #[derive(Parser, Debug)]
@@ -71,4 +72,8 @@ pub struct Args {
     /// Deletion minimum number of overlaps with other supplementary alignment events required to call deletion event.
     #[arg(long, default_value_t = 2)]
     pub del_min_ovl_cnt: usize,
+
+    /// Log level
+    #[arg(long, default_value_t = Level::Info)]
+    pub log_level: Level,
 }
