@@ -1,4 +1,3 @@
-use itertools::Itertools;
 use rust_lapper::Interval;
 
 use crate::{call::SupplIntervalSignals, utils::Direction};
@@ -52,29 +51,20 @@ pub struct SV {
     /// Interval span of SV
     pub itv: Interval<usize, String>,
     /// Reads associated with SV
-    pub reads: [Option<String>; 2],
+    pub reads: Vec<String>,
     /// What type of SV?
     pub typ: SVType,
 }
 
 impl SV {
-    pub fn reads(&self) -> impl Iterator<Item = &str> {
-        self.reads.iter().flatten().map(|read| &read[..])
-    }
-
     pub fn as_bed(&self) -> String {
-        let reads = if let Some((r1, r2)) = self.reads().collect_tuple() {
-            (r1, r2)
-        } else {
-            ("", "")
-        };
+        let reads = self.reads.join("~");
         format!(
-            "{}\t{}\t{}\t{}~{}\t0\t.\t{}\t{}\t{}",
+            "{}\t{}\t{}\t{}\t0\t.\t{}\t{}\t{}",
             self.itv.val,
             self.itv.start,
             self.itv.stop,
-            reads.0,
-            reads.1,
+            reads,
             self.itv.start,
             self.itv.stop,
             self.typ.color()

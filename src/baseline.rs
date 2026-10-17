@@ -180,12 +180,12 @@ pub fn calculate_stats_indel_rate(
 /// Aggregate read indel stats to generate baseline indel distribution for outlier detection.
 /// * Uses read indel proportion (0.0-1.0*).
 /// * Can be slightly higher since both insertions and deletions counted over read aligned length.
-/// 
+///
 /// # Arguments
 /// * bam: path to bam
 /// * regions: all intervals
 /// * ignore_bed: regions to ignore
-/// 
+///
 /// # Returns
 /// * map of chrom to [`ReadIndelSummaryStats`]
 pub fn aggregate_stats_indel_rate(
