@@ -32,6 +32,7 @@ mod utils;
 
 fn main() -> eyre::Result<()> {
     let args = Args::parse();
+    simple_logger::init_with_level(args.log_level)?;
 
     let bam = &args.bam;
     let output_dir = &args.output_dir;
@@ -55,7 +56,7 @@ fn main() -> eyre::Result<()> {
     let null_itree_ignore = Lapper::new(vec![]);
 
     if args.ignore_bed.is_some() {
-        eprintln!(
+        log::info!(
             "Loaded {} ignored region(s) across {} chromosome(s).",
             ignore_bed.values().map(|b| b.len()).sum::<usize>(),
             ignore_bed.len()
@@ -69,20 +70,21 @@ fn main() -> eyre::Result<()> {
         aligned_intervals_windows(&mut fh, args.wg_window)
     }?;
 
-    eprintln!(
-        "Computing indel rates across {} chromosome(s).",
-        regions.len()
-    );
     let tsv_indel_stats = output_dir.join("chrom_indel_stats.tsv");
     let chrom_read_stats = if !tsv_indel_stats.exists() {
-        let indel_stats = aggregate_stats_indel_rate(&regions, bam, &ignore_bed);
+        log::info!(
+            "Computing indel rates across {} chromosome(s).",
+            regions.len()
+        );
+        let indel_stats = aggregate_stats_indel_rate(bam, &regions, &ignore_bed);
         write_indel_read_stats(&indel_stats, &tsv_indel_stats)?;
         indel_stats
     } else {
+        log::info!("Loaded existing indel rates from {tsv_indel_stats:?}.");
         read_indel_read_stats(&tsv_indel_stats)?
     };
 
-    eprintln!(
+    log::info!(
         "Detecting events across {} window(s) in {} chromosome(s).",
         regions.values().map(|b| b.len()).sum::<usize>(),
         regions.len()
@@ -96,7 +98,7 @@ fn main() -> eyre::Result<()> {
             let read_stats = &chrom_read_stats[&region.val];
             let itree_ignore_chrom = ignore_bed.get(&region.val).unwrap_or(&null_itree_ignore);
 
-            eprintln!("On {}:{}-{}...", region.val, region.start, region.stop);
+            log::info!("On {}:{}-{}...", region.val, region.start, region.stop);
             let events = detect_events(
                 bam,
                 region,
@@ -111,7 +113,7 @@ fn main() -> eyre::Result<()> {
             match events {
                 Ok(events) => Some(events),
                 Err(err) => {
-                    eprintln!("Failed on {region:?}: {err}");
+                    log::error!("Failed on {region:?}: {err}");
                     None
                 }
             }
@@ -151,6 +153,10 @@ fn main() -> eyre::Result<()> {
             a
         });
 
+    log::info!(
+        "Postprocessing and filtering {} candidate events.",
+        read_events.values().map(|b| b.len()).sum::<usize>(),
+    );
     let sv_events = postprocess_events(read_events);
     let output_bed = output_dir.join("calls.bed");
     let mut output_bed_fh = BufWriter::new(File::create(output_bed)?);
@@ -161,11 +167,11 @@ fn main() -> eyre::Result<()> {
     }
 
     if let Some(out_bam) = args.output_bam {
-        eprintln!("Generating tagged BAM.",);
+        log::info!("Generating tagged BAM.",);
         create_tagged_bam(&args.bam, &out_bam, &sv_events)?;
     }
 
-    eprintln!("Done!");
+    log::info!("Done!");
 
     Ok(())
 }
