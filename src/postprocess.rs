@@ -130,21 +130,32 @@ pub fn postprocess_events(read_events: HashMap<String, Vec<Event>>) -> HashMap<S
                 continue;
             }
 
-            let other_msignals_same_read = &read_mismatch_signals[&itv_msignal.val.read[..]];
+            let Some(itv_other_msignal_same_read) =
+                &read_mismatch_signals[&itv_msignal.val.read[..]]
+                    .iter()
+                    .find(|itv| *itv != itv_msignal)
+            else {
+                continue;
+            };
 
             // Check overlap of current position
-            // Do they have no unbalanced overlap
+            //  | o|
+            // | *| <--
             let mut ovl = itree_mismatch_events
                 .find(itv_msignal.start, itv_msignal.stop)
+                .filter(|itv| *itv != itv_msignal)
                 .collect_vec();
             let ovl_reads: HashSet<&str> = ovl.iter().map(|itv| &itv.val.read[..]).collect();
 
             // Check overlap with other positions
-            // Do they have no unbalanced overlap
-            let mut ovl_sec = other_msignals_same_read
-                .iter()
+            //  | o|             |* | <--
+            // | *|             |o |
+            let mut ovl_sec = itree_mismatch_events
+                .find(
+                    itv_other_msignal_same_read.start,
+                    itv_other_msignal_same_read.stop,
+                )
                 .filter(|itv| *itv != itv_msignal)
-                .flat_map(|itv| itree_mismatch_events.find(itv.start, itv.stop))
                 .collect_vec();
 
             let ovl_sec_reads: HashSet<&str> =
@@ -157,7 +168,7 @@ pub fn postprocess_events(read_events: HashMap<String, Vec<Event>>) -> HashMap<S
             }
 
             ovl.retain(|itv| shared_reads.contains(&&itv.val.read[..]));
-            ovl_sec.retain(|itv| shared_reads.contains(&&itv.val.read[..]));
+            ovl_sec.retain(|itv| shared_reads.contains(&&itv.val.read[..]) && *itv != itv_msignal);
 
             // Of the shared reads, are they complementary in their balance direction?
             // Is there a read that is unbalanced on the left and one on the right?
@@ -183,13 +194,14 @@ pub fn postprocess_events(read_events: HashMap<String, Vec<Event>>) -> HashMap<S
                 continue;
             }
 
-            let min_stop = std::cmp::min(ovl[0].stop, ovl_sec[0].stop);
-            let max_start = std::cmp::max(ovl[0].start, ovl_sec[0].start);
+            let min_start = std::cmp::min(itv_msignal.start, itv_other_msignal_same_read.start);
+            let max_stop = std::cmp::max(itv_msignal.stop, itv_other_msignal_same_read.stop);
+            assert!(min_start < max_stop);
 
             let inversion = SV {
                 itv: Interval {
-                    start: min_stop,
-                    stop: max_start,
+                    start: min_start,
+                    stop: max_stop,
                     val: chrom.clone(),
                 },
                 reads: shared_reads.iter().map(|s| String::from(**s)).collect(),

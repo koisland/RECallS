@@ -496,7 +496,7 @@ pub fn detect_events(
         let typ_read_stats = &indel_read_stats[is_sec as usize];
         let (rst, rend) = (
             rec.alignment_start().unwrap().map(|p| p.get())?,
-            rec.alignment_end().unwrap().map(|p| p.get())?,
+            rec.alignment_end().unwrap().map(|p| p.get())? + 1,
         );
         let aln_len = rend - rst;
         let aln_len_f = aln_len as f64;
@@ -666,7 +666,7 @@ pub fn detect_events(
     // Inversion supplementary read intersections
     let itree_suppl_inv = Lapper::new(sa_itvs);
     for sitv in itree_suppl_inv.iter() {
-        let ovl_itvs = itree_suppl_inv
+        let mut ovl_itvs = itree_suppl_inv
             .find(sitv.start, sitv.stop)
             // Omit self
             .filter(|oitv| oitv.val != sitv.val)
@@ -683,11 +683,6 @@ pub fn detect_events(
         if ovl_itvs.is_empty() {
             continue;
         }
-        if ovl_itvs.len() > 2 {
-            log::debug!("More overlaps than expected for itv: {itv:?}");
-            log::debug!("{ovl_itvs:#?}");
-            continue;
-        }
 
         let all_contained = ovl_itvs.iter().all(|oitv| {
             itv.overlap(oitv.val.itv.start, oitv.val.itv.stop)
@@ -695,41 +690,132 @@ pub fn detect_events(
         });
         // If all contained in this window, means we're done
         if all_contained {
-            if let (Some(itv_1), Some(itv_2)) = (ovl_itvs.first(), ovl_itvs.get(1)) {
-                let putative_type_1 =
-                    assign_type_by_clip_direction(&itv_1.val.itv, &itv_1.val.suppl_itv);
-                let putative_type_2 =
-                    assign_type_by_clip_direction(&itv_2.val.itv, &itv_2.val.suppl_itv);
-                log::debug!(
-                    "{:?},{itv:?}\n\t{putative_type_1:?},{putative_type_2:?},{},{}",
-                    (sitv.start, sitv.stop),
-                    itv_1.val.read,
-                    itv_2.val.read
-                )
-            }
-            if let Some(itv_1) = ovl_itvs.first() {
-                let Some(putative_type_1) =
-                    assign_type_by_clip_direction(&itv_1.val.itv, &itv_1.val.suppl_itv)
-                else {
-                    continue;
-                };
+            match ovl_itvs.len() {
+                0 => unreachable!(),
+                1 => {
+                    let itv_1 = ovl_itvs[0];
+                    let Some(putative_type_1) =
+                        assign_type_by_clip_direction(&itv_1.val.itv, &itv_1.val.suppl_itv)
+                    else {
+                        continue;
+                    };
 
-                let itv_span = itv_1.val.span();
-                events.push(Event::SV(SV {
-                    itv: Interval {
-                        start: itv_span.start,
-                        stop: itv_span.stop,
-                        val: chrom.to_owned(),
-                    },
-                    reads: vec![itv_1.val.read.clone()],
-                    typ: putative_type_1,
-                }));
+                    let itv_span = itv_1.val.span();
+                    events.push(Event::SV(SV {
+                        itv: Interval {
+                            start: itv_span.start,
+                            stop: itv_span.stop,
+                            val: chrom.to_owned(),
+                        },
+                        reads: vec![itv_1.val.read.clone()],
+                        typ: putative_type_1,
+                    }));
+                }
+                2 => {
+                    let itv_1 = ovl_itvs[0];
+                    let itv_2 = ovl_itvs[1];
+
+                    let putative_type_1 =
+                        assign_type_by_clip_direction(&itv_1.val.itv, &itv_1.val.suppl_itv);
+                    let putative_type_2 =
+                        assign_type_by_clip_direction(&itv_2.val.itv, &itv_2.val.suppl_itv);
+
+                    let Some(putative_type) = (putative_type_1 == putative_type_2)
+                        .then_some(putative_type_1)
+                        .flatten()
+                    else {
+                        continue;
+                    };
+
+                    let itv_1_span = itv_1.val.span();
+                    let itv_2_span = itv_2.val.span();
+
+                    let min_start = std::cmp::min(itv_1_span.start, itv_2_span.start);
+                    let max_stop = std::cmp::min(itv_1_span.stop, itv_2_span.stop);
+
+                    events.push(Event::SV(SV {
+                        itv: Interval {
+                            start: min_start,
+                            stop: max_stop,
+                            val: chrom.to_owned(),
+                        },
+                        reads: vec![itv_1.val.read.clone()],
+                        typ: putative_type,
+                    }));
+                }
+                _ => {
+                    // Sort by read to chunk by
+                    ovl_itvs.sort_by(|a, b| a.val.read.cmp(&b.val.read));
+
+                    // Choose SV event based on clip direction changes
+                    for (read, grp) in &ovl_itvs.iter().chunk_by(|itv| &itv.val.read) {
+                        let sorted_suppl_itvs: Vec<_> = grp
+                            .into_iter()
+                            .flat_map(|itv| [&itv.val.itv, &itv.val.suppl_itv])
+                            .sorted()
+                            .dedup()
+                            .collect();
+
+                        // Transition from one clipping direction to the other
+                        // Deletion will only have one
+                        // Inversion will have multiple
+                        let mut n_clip_transitions = 0;
+                        for itv_slice in sorted_suppl_itvs.windows(2) {
+                            let (itv, next_itv) = (itv_slice[0], itv_slice[1]);
+                            if !matches!(
+                                (itv.val, next_itv.val),
+                                (Direction::Left, Direction::Left)
+                                    | (Direction::Right, Direction::Right)
+                            ) {
+                                n_clip_transitions += 1;
+                            }
+                        }
+                        // Case 1: Deletion
+                        // | >|   |< |
+                        // Case 2: Inversion
+                        // | >|   |< |
+                        //    |< >|
+                        // Case 3: TODO
+                        match (n_clip_transitions, sorted_suppl_itvs.len()) {
+                            (0, _) => (),
+                            (1, 2) => {
+                                let (itv, next_itv) = (sorted_suppl_itvs[0], sorted_suppl_itvs[1]);
+                                events.push(Event::SV(SV {
+                                    itv: Interval {
+                                        start: itv.stop,
+                                        stop: next_itv.start,
+                                        val: chrom.to_owned(),
+                                    },
+                                    reads: vec![read.to_owned()],
+                                    typ: SVType::Inversion,
+                                }));
+                            }
+                            (2, 3) => {
+                                let mid_itv = sorted_suppl_itvs[1];
+                                events.push(Event::SV(SV {
+                                    itv: Interval {
+                                        start: mid_itv.start,
+                                        stop: mid_itv.stop,
+                                        val: chrom.to_owned(),
+                                    },
+                                    reads: vec![read.to_owned()],
+                                    typ: SVType::Inversion,
+                                }));
+                            }
+                            _ => {
+                                log::debug!(
+                                    "Unexpected number of transitions ({n_clip_transitions}) of ovl_itvs ({}) for contained sitvs. {sorted_suppl_itvs:?}",
+                                    sorted_suppl_itvs.len()
+                                )
+                            }
+                        }
+                    }
+                }
             }
         } else if let Some(putative_type) =
             assign_type_by_clip_direction(&sitv.val.itv, &sitv.val.suppl_itv)
         {
-            // Otherwise pass
-            // SupplSignal
+            // Otherwise pass to postprocess step
             match putative_type {
                 SVType::Deletion => {
                     let span = sitv.val.span();
