@@ -45,10 +45,10 @@ pub fn create_tagged_bam(
         |(mut inv_events, mut del_events), svs| {
             for (sv_type, reads) in svs.iter().map(|sv| (sv.typ.clone(), &sv.reads)) {
                 match sv_type {
-                    SVType::Deletion => {
+                    SVType::DeletionSuppl => {
                         del_events.extend(reads.iter().map(|s| &s[..]));
                     }
-                    SVType::Inversion => {
+                    SVType::InversionSuppl | SVType::InversionInferred => {
                         inv_events.extend(reads.iter().map(|s| &s[..]));
                     }
                 }

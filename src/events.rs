@@ -6,6 +6,7 @@ use crate::{call::SupplIntervalSignals, utils::Direction};
 #[derive(Debug)]
 pub enum Signal {
     /// Supplementary alignment signal
+    #[allow(unused)]
     SupplSignal(SupplIntervalSignals),
     /// Mismatch alignment signal
     MismatchSignal(MismatchSignal),
@@ -33,15 +34,17 @@ pub struct MismatchSignal {
 /// SV type detected
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum SVType {
-    Deletion,
-    Inversion,
+    InversionInferred,
+    DeletionSuppl,
+    InversionSuppl,
 }
 
 impl SVType {
     fn color(&self) -> &'static str {
         match self {
-            SVType::Deletion => "255,0,0",
-            SVType::Inversion => "0,0,255",
+            SVType::DeletionSuppl => "255,0,0",
+            SVType::InversionInferred => "0,128,128",
+            SVType::InversionSuppl => "0,0,255",
         }
     }
 }

@@ -4,6 +4,7 @@ use itertools::Itertools;
 use rust_lapper::{Interval, Lapper};
 
 use crate::{
+    call::{SupplIntervalSignals, detect_suppl_sv_events},
     events::{Event, MismatchSignal, SV, SVType, Signal},
     utils::merge_intervals,
 };
@@ -32,27 +33,28 @@ pub fn postprocess_events(read_events: HashMap<String, Vec<Event>>) -> HashMap<S
         let mut deletion_events: Vec<Interval<usize, HashSet<&str>>> = vec![];
 
         // Create itree of events split by type
-        let mut suppl_signals: Vec<Interval<usize, &str>> = vec![];
+        let mut suppl_signals: Vec<SupplIntervalSignals> = vec![];
         let mut mismatch_signals: Vec<Interval<usize, &MismatchSignal>> = vec![];
         let mut read_mismatch_signals: HashMap<&str, Vec<Interval<usize, &MismatchSignal>>> =
             HashMap::new();
         for event in events.iter() {
             match event {
                 Event::SV(sv) => match sv.typ {
-                    SVType::Deletion => {
+                    SVType::DeletionSuppl => {
                         deletion_events.push(Interval {
                             start: sv.itv.start,
                             stop: sv.itv.stop,
                             val: HashSet::from_iter(sv.reads.iter().map(|s| &s[..])),
                         });
                     }
-                    SVType::Inversion => {
+                    SVType::InversionSuppl => {
                         inversion_events.push(Interval {
                             start: sv.itv.start,
                             stop: sv.itv.stop,
                             val: HashSet::from_iter(sv.reads.iter().map(|s| &s[..])),
                         });
-                    }
+                    },
+                    _ => ()
                 },
                 Event::Signal(Signal::MismatchSignal(msignal)) => {
                     mismatch_signals.push(Interval {
@@ -78,26 +80,21 @@ pub fn postprocess_events(read_events: HashMap<String, Vec<Event>>) -> HashMap<S
                         });
                 }
                 Event::Signal(Signal::SupplSignal(ssignal)) => {
-                    suppl_signals.push(Interval {
-                        start: ssignal.itv.start,
-                        stop: ssignal.itv.stop,
-                        val: &ssignal.read,
-                    });
+                    suppl_signals.push(ssignal.clone());
                 }
             }
         }
-        // Merge complete events
-        // Expect only two.
+        // Merge duplicate complete events at breakpoints 
         let merged_inversion_events = merge_intervals(
             inversion_events.into_iter(),
             1,
-            |_a, _b| true,
+            |a, b| a == b,
             |a, b| a.val.extend(b.val.iter()),
         );
         let merged_deletion_events = merge_intervals(
             deletion_events.into_iter(),
             1,
-            |_a, _b| true,
+            |a, b| a == b,
             |a, b| a.val.extend(b.val.iter()),
         );
         svs.extend(merged_inversion_events.into_iter().map(|itv| SV {
@@ -107,7 +104,7 @@ pub fn postprocess_events(read_events: HashMap<String, Vec<Event>>) -> HashMap<S
                 val: chrom.clone(),
             },
             reads: itv.val.into_iter().map(String::from).collect(),
-            typ: SVType::Inversion,
+            typ: SVType::InversionSuppl,
         }));
         svs.extend(merged_deletion_events.into_iter().map(|itv| SV {
             itv: Interval {
@@ -116,11 +113,20 @@ pub fn postprocess_events(read_events: HashMap<String, Vec<Event>>) -> HashMap<S
                 val: chrom.clone(),
             },
             reads: itv.val.into_iter().map(String::from).collect(),
-            typ: SVType::Deletion,
+            typ: SVType::DeletionSuppl,
         }));
 
-        // TODO
-        log::debug!("Supplementary signal length: {}", suppl_signals.len());
+        if !suppl_signals.is_empty() {
+            log::debug!(
+                "Calling {} supplementary signals that span across windows",
+                suppl_signals.len()
+            );
+            let suppl_events = detect_suppl_sv_events(&suppl_signals, &chrom);
+            svs.extend(suppl_events.into_iter().filter_map(|event| {
+                let Event::SV(sv) = event else { return None };
+                Some(sv)
+            }));
+        }
 
         let itree_mismatch_events = Lapper::new(mismatch_signals);
         // Ignore read if used already
@@ -204,11 +210,16 @@ pub fn postprocess_events(read_events: HashMap<String, Vec<Event>>) -> HashMap<S
                     stop: max_stop,
                     val: chrom.clone(),
                 },
-                reads: shared_reads.iter().map(|s| String::from(**s)).collect(),
-                typ: SVType::Inversion,
+                reads: shared_reads
+                    .iter()
+                    .sorted()
+                    .map(|s| String::from(**s))
+                    .collect(),
+                // reads: vec![itv_msignal.val.read.to_owned()],
+                typ: SVType::InversionInferred,
             };
             svs.push(inversion);
-
+            eval_reads.insert(&itv_msignal.val.read);
             eval_reads.extend(shared_reads);
         }
 

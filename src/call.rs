@@ -65,8 +65,11 @@ impl NtCounts {
 /// * ex. `chr7,2441699,-,12760S18196M69I,60,120`
 type SARecord<'a> = (&'a str, &'a str, &'a str, &'a str, &'a str, &'a str);
 
-/// Get clip direction for CIGAR string.
-fn get_clip_direction(cg: impl Iterator<Item = Op>) -> Option<Direction> {
+/// Get clip direction for CIGAR string and supplementary alignments
+fn get_clip_direction(
+    cg: impl Iterator<Item = Op>,
+    sa: Option<&[Interval<usize, Direction>]>,
+) -> Option<Direction> {
     let mut left_op = None;
     let mut right_op = None;
     for (i, op) in cg
@@ -83,7 +86,26 @@ fn get_clip_direction(cg: impl Iterator<Item = Op>) -> Option<Direction> {
         (None, None) => None,
         (None, Some(_)) => Some(Direction::Right),
         (Some(_), None) => Some(Direction::Left),
-        (Some(_), Some(_)) => Some(Direction::Both),
+        (Some(left_op), Some(right_op)) => {
+            if let Some(sa) = sa {
+                // Check valid based on clipping op length difference of other suppl alignments
+                let valid_lhs = sa
+                    .iter()
+                    .any(|itv| (left_op.len() as f32 / (itv.stop - itv.start) as f32) > 0.5);
+                let valid_rhs = sa
+                    .iter()
+                    .any(|itv| (right_op.len() as f32 / (itv.stop - itv.start) as f32) > 0.5);
+
+                match (valid_lhs, valid_rhs) {
+                    (true, true) => Some(Direction::Both),
+                    (true, false) => Some(Direction::Left),
+                    (false, true) => Some(Direction::Right),
+                    (false, false) => Some(Direction::Both),
+                }
+            } else {
+                Some(Direction::Both)
+            }
+        }
     }
 }
 
@@ -226,110 +248,91 @@ pub struct SupplIntervalSignals {
     /// Primary interval and its direction
     pub itv: Interval<usize, Direction>,
     /// Supplementary interval and its direction
-    pub suppl_itv: Interval<usize, Direction>,
+    pub suppl_itvs: Vec<Interval<usize, Direction>>,
     /// Read name
     pub read: String,
 }
 
 impl SupplIntervalSignals {
     /// Get breakpoints based on direction.
-    /// * If supplementary alignments on both ends, default to the end that minimizes the length of the interval.
     ///
     /// # Returns
     /// * tuple of start and stop position
-    pub fn breakpoints(&self) -> (usize, usize) {
-        match (self.itv.val, self.suppl_itv.val) {
-            (Direction::Left, Direction::Left) | (Direction::Left, Direction::Both) => (
-                std::cmp::min(self.itv.start, self.suppl_itv.start),
-                std::cmp::max(self.itv.start, self.suppl_itv.start),
-            ),
-            (Direction::Left, Direction::Right) => (
-                std::cmp::min(self.itv.start, self.suppl_itv.stop),
-                std::cmp::max(self.itv.start, self.suppl_itv.stop),
-            ),
-            (Direction::Right, Direction::Left)
-            | (Direction::Right, Direction::Both)
-            | (Direction::Both, Direction::Left)
-            | (Direction::Both, Direction::Both) => (
-                std::cmp::min(self.itv.stop, self.suppl_itv.start),
-                std::cmp::max(self.itv.stop, self.suppl_itv.start),
-            ),
-            (Direction::Right, Direction::Right) | (Direction::Both, Direction::Right) => (
-                std::cmp::min(self.itv.stop, self.suppl_itv.stop),
-                std::cmp::max(self.itv.stop, self.suppl_itv.stop),
-            ),
-        }
-    }
-
-    /// Get span of supplementary alignment breakpoints.
-    ///
-    /// # Returns
-    /// * [`Interval`] with [`Interval::val`] representing spanned length.
-    pub fn span(&self) -> Interval<usize, usize> {
-        let (start, stop) = self.breakpoints();
-        let span = start.saturating_sub(stop);
-        Interval {
-            start,
-            stop,
-            val: span,
-        }
+    pub fn breakpoints(
+        &self,
+        dst: usize,
+    ) -> impl Iterator<Item = Interval<usize, (&Interval<usize, Direction>, &str)>> {
+        self.suppl_itvs
+            .iter()
+            .chain(std::iter::once(&self.itv))
+            .flat_map(move |itv| match itv.val {
+                Direction::Left => [
+                    Some(Interval {
+                        start: itv.start.saturating_sub(dst),
+                        stop: itv.start + dst,
+                        val: (itv, &self.read[..]),
+                    }),
+                    None,
+                ]
+                .into_iter(),
+                Direction::Right => [
+                    Some(Interval {
+                        start: itv.stop.saturating_sub(dst),
+                        stop: itv.stop + dst,
+                        val: (itv, &self.read[..]),
+                    }),
+                    None,
+                ]
+                .into_iter(),
+                Direction::Both => [
+                    Some(Interval {
+                        start: itv.start.saturating_sub(dst),
+                        stop: itv.start + dst,
+                        val: (itv, &self.read[..]),
+                    }),
+                    Some(Interval {
+                        start: itv.stop.saturating_sub(dst),
+                        stop: itv.stop + dst,
+                        val: (itv, &self.read[..]),
+                    }),
+                ]
+                .into_iter(),
+            })
+            .flatten()
     }
 }
 
-/// Assign a [`SVType`] by read clipping direction.
-///
-/// * For inversion, expect both ends to be in same clipping direction
-/// ```ignore
-/// |x >|              |< *|
-///     |< *|      |x >|
-/// ```
-///
-/// * For deletion, ends will be in opposing directions.
-/// ```ignore
-/// |x >|      |< *|
-/// |* >|      |< x|
-/// ```
-///
-/// * If not one of these, omit.
-///
-/// # Arguments
-/// * itv: primary alignment and direction
-/// * suppl_itv: supplementary alignment interval and direction
-///
-/// # Returns
-/// * Clip direction, if any. Invalid direction pairs are omitted.
-fn assign_type_by_clip_direction(
-    itv: &Interval<usize, Direction>,
-    suppl_itv: &Interval<usize, Direction>,
-) -> Option<SVType> {
-    // What is the order of the current alignment relative to the suppl alignment?
-    let sa_upstream = suppl_itv.start > itv.stop;
-
-    match (sa_upstream, &itv.val, &suppl_itv.val) {
-            (_, Direction::Left, Direction::Left) |
-            (_, Direction::Right, Direction::Right) => {
-                Some(SVType::Inversion)
-            },
-            // Invalid
-            (_, Direction::Both, _) |
-            (_, _, Direction::Both) |
-            //       *
-            // |<  | |  >|
-            (true, Direction::Left, Direction::Right) |
-            // *     
-            // |<  | |  >|
-            (false, Direction::Right, Direction::Left) => {
-                None
-            },
-            //       *
-            // |  >| |<  |
-            // *     
-            // |  >| |<  |
-            (true, Direction::Right, Direction::Left) |
-            (false, Direction::Left, Direction::Right) => {
-                Some(SVType::Deletion)
-            }
-        }
+/// Get span of supplementary alignment intervals based on direction.
+pub fn suppl_span_sv(
+    itv_1: &Interval<usize, Direction>,
+    itv_2: &Interval<usize, Direction>,
+) -> (usize, usize, Option<SVType>) {
+    match (itv_1.val, itv_2.val) {
+        (Direction::Left, Direction::Left) | (Direction::Left, Direction::Both) => (
+            std::cmp::min(itv_1.start, itv_2.start),
+            std::cmp::max(itv_1.start, itv_2.start),
+            Some(SVType::InversionSuppl),
+        ),
+        // Likely foldback artifact
+        (Direction::Left, Direction::Right) => (
+            std::cmp::min(itv_1.start, itv_2.stop),
+            std::cmp::max(itv_1.start, itv_2.stop),
+            None,
+        ),
+        (Direction::Right, Direction::Left)
+        | (Direction::Right, Direction::Both)
+        | (Direction::Both, Direction::Left)
+        | (Direction::Both, Direction::Both) => (
+            std::cmp::min(itv_1.stop, itv_2.start),
+            std::cmp::max(itv_1.stop, itv_2.start),
+            Some(SVType::DeletionSuppl),
+        ),
+        (Direction::Right, Direction::Right) | (Direction::Both, Direction::Right) => (
+            std::cmp::min(itv_1.stop, itv_2.stop),
+            std::cmp::max(itv_1.stop, itv_2.stop),
+            Some(SVType::InversionSuppl),
+        ),
+    }
 }
 
 /// Get secondary read alignment SNV nucleotide counts.
@@ -434,6 +437,91 @@ fn get_secondary_snv_counts(
     Ok(mismatch_pos_cnts)
 }
 
+pub fn detect_suppl_sv_events(itvs_sa: &[SupplIntervalSignals], chrom: &str) -> Vec<Event> {
+    let mut events = vec![];
+    let itree_sa = Lapper::new(
+        itvs_sa
+            .iter()
+            .flat_map(|sitv| sitv.breakpoints(CLIP_OVL_DST))
+            .collect(),
+    );
+
+    for sitv in itvs_sa {
+        let valid_ovl = sitv
+            .breakpoints(CLIP_OVL_DST)
+            .all(|itv_brkpt| itree_sa.count(itv_brkpt.start, itv_brkpt.stop) > 1);
+
+        if !valid_ovl {
+            continue;
+        }
+
+        let all_itvs = sitv
+            .suppl_itvs
+            .iter()
+            .chain(std::iter::once(&sitv.itv))
+            .sorted()
+            .collect_vec();
+
+        // Transition from one clipping direction to the other
+        // Deletion will only have one
+        // Inversion will have multiple
+        let mut n_clip_transitions = 0;
+        for itvs in all_itvs.windows(2) {
+            let (itv, next_itv) = (itvs[0], itvs[1]);
+            if !matches!(
+                (itv.val, next_itv.val),
+                (Direction::Left, Direction::Left) | (Direction::Right, Direction::Right)
+            ) {
+                n_clip_transitions += 1;
+            }
+        }
+        // Case 1: Deletion
+        // | >|   |< |
+        // Case 2: Inversion
+        // | >|   |< |
+        //    |< >|
+        // Case 3: TODO
+        match (n_clip_transitions, all_itvs.len()) {
+            (0 | 1, 2) => {
+                let (itv, next_itv) = (all_itvs[0], all_itvs[1]);
+                let (span_st, span_stop, svtype) = suppl_span_sv(itv, next_itv);
+                let Some(svtype) = svtype else {
+                    continue;
+                };
+                events.push(Event::SV(SV {
+                    itv: Interval {
+                        start: span_st,
+                        stop: span_stop,
+                        val: chrom.to_owned(),
+                    },
+                    reads: vec![sitv.read.to_owned()],
+                    typ: svtype,
+                }));
+            }
+            (2, 3) => {
+                let mid_itv = all_itvs[1];
+                events.push(Event::SV(SV {
+                    itv: Interval {
+                        start: mid_itv.start,
+                        stop: mid_itv.stop,
+                        val: chrom.to_owned(),
+                    },
+                    reads: vec![sitv.read.to_owned()],
+                    typ: SVType::InversionSuppl,
+                }));
+            }
+            (0, 1) => (),
+            _ => {
+                log::debug!(
+                    "Unexpected number of transitions ({n_clip_transitions}) of ovl_itvs ({}) for contained sitvs. {all_itvs:?}",
+                    all_itvs.len()
+                )
+            }
+        }
+    }
+    events
+}
+
 /// Main loop for initial event detection.
 /// 1. Get secondary SNV counts across the query window
 /// 2. Get mismatch markers in every read
@@ -473,7 +561,7 @@ pub fn detect_events(
     let mut fh = bam::io::indexed_reader::Builder::default().build_from_path(bam)?;
     let header = fh.read_header()?;
     let chrom = &itv.val;
-    let (st, end) = (itv.start, itv.stop);
+    let (st, stop) = (itv.start, itv.stop);
     let region = Region::new(
         chrom.to_owned(),
         Position::new(itv.start.clamp(1, usize::MAX)).unwrap()..=Position::new(itv.stop).unwrap(),
@@ -482,7 +570,7 @@ pub fn detect_events(
 
     let indel_read_stats = [&indel_read_stats.primary, &indel_read_stats.secondary];
     let mut events = vec![];
-    let mut sa_itvs = vec![];
+    let mut itvs_sa: Vec<SupplIntervalSignals> = vec![];
 
     // Get secondary read SNVs in region
     let secondary_snv_counts = get_secondary_snv_counts(bam, &region, itree_ignore)?;
@@ -494,16 +582,16 @@ pub fn detect_events(
         let is_suppl = rec.data().get(b"SA").is_some();
         let is_sec = rec.flags().contains(Flags::SECONDARY);
         let typ_read_stats = &indel_read_stats[is_sec as usize];
-        let (rst, rend) = (
+        let (rst, rstop) = (
             rec.alignment_start().unwrap().map(|p| p.get())?,
             rec.alignment_end().unwrap().map(|p| p.get())? + 1,
         );
-        let aln_len = rend - rst;
+        let aln_len = rstop - rst;
         let aln_len_f = aln_len as f64;
 
         // Ignore if read overlaps majority of any ignored region.
-        if itree_ignore.find(rst, rend).any(|ovl| {
-            let ovl_len = overlap_length(rst, rend, ovl.start, ovl.stop) as f64;
+        if itree_ignore.find(rst, rstop).any(|ovl| {
+            let ovl_len = overlap_length(rst, rstop, ovl.start, ovl.stop) as f64;
             (ovl_len / aln_len_f) > 0.5
         }) {
             continue;
@@ -513,11 +601,11 @@ pub fn detect_events(
         // * unbalanced reads bordered by large indels. check secondary alignment
         // * supplementary alignments on same chrom (for now)
         let read_markers =
-            collect_read_markers(&rec, st, end, itree_ignore, &secondary_snv_counts)?;
+            collect_read_markers(&rec, st, stop, itree_ignore, &secondary_snv_counts)?;
         let indel_rate_zscore = typ_read_stats.zscore(read_markers.n_indels as f64 / aln_len_f);
         let unbalanced_summary = is_unbalanced_alignment(
             &read_markers.pos,
-            (rst, rend),
+            (rst, rstop),
             inv_min_num_snvs,
             inv_thr_unbalanced,
         )?;
@@ -533,7 +621,7 @@ pub fn detect_events(
             let event = MismatchSignal {
                 itv: Interval {
                     start: rst,
-                    stop: rend,
+                    stop: rstop,
                     val: chrom.to_owned(),
                 },
                 read: String::from_utf8(read.to_vec())?,
@@ -555,286 +643,69 @@ pub fn detect_events(
                 bail!("Invalid type for SA tag for {read}.")
             };
 
+            let clip_direction_prior =
+                get_clip_direction(cg.iter().flatten(), None).with_context(|| {
+                    format!("Read {read} must have soft/hardclipped operation in cigar: {cg:?}")
+                })?;
+
             // Store suppl inversion signal intervals
-            let clip_direction = get_clip_direction(cg.iter().flatten()).with_context(|| {
-                format!("Read {read} must have soft/hardclipped operation in cigar: {cg:?}")
-            })?;
-            for (_sa_chrom, sa_start, _sa_strand, sa_cigar, sa_mapq, _sa_nm) in
-                str::from_utf8(sa_tag)?
-                    .split(';')
-                    .flat_map(|rec| rec.splitn(6, ',').collect_tuple::<SARecord>())
-                    // Must be same chromosome
-                    .filter(|sa_rec| sa_rec.0 == chrom)
-            {
-                let sa_cigar = noodles::sam::record::Cigar::new(sa_cigar.as_bytes());
-                let sa_start: usize = sa_start.parse()?;
-                let sa_aln_len = sa_cigar.alignment_span()?;
-                let sa_end = sa_start + sa_aln_len;
+            let suppl_alns: Vec<Interval<usize, Direction>> = str::from_utf8(sa_tag)?
+                .split(';')
+                .flat_map(|rec| rec.splitn(6, ',').collect_tuple::<SARecord>())
+                // Must be same chromosome
+                // And above MAPQ
+                .filter_map(
+                    |(sa_chrom, sa_start, _sa_strand, sa_cigar, sa_mapq, _sa_nm)| {
+                        let same_chrom = sa_chrom == chrom;
+                        let sa_cigar = noodles::sam::record::Cigar::new(sa_cigar.as_bytes());
+                        let sa_start: usize = sa_start.parse().ok()?;
+                        let sa_aln_len = sa_cigar.alignment_span().ok()?;
+                        let sa_stop = sa_start + sa_aln_len;
 
-                let sa_mapq: u8 = sa_mapq.parse()?;
-                if sa_mapq < del_min_mapq {
-                    continue;
-                }
-
-                let sa_clip_direction = get_clip_direction(sa_cigar.iter().flatten())
-                    .with_context(|| format!("Read {read} must have soft/hardclipped operation in SA cigar: {sa_cigar:?}"))?;
-
-                // Add a small overlap distance of 2 kbp in case of alignment forcing suppl align signal slightly upstream/downstream
-                match clip_direction {
-                    // |<  |
-                    Direction::Left => sa_itvs.push(Interval {
-                        start: rst.saturating_sub(CLIP_OVL_DST),
-                        stop: rst + CLIP_OVL_DST,
-                        val: SupplIntervalSignals {
-                            chrom: chrom.to_owned(),
-                            itv: Interval {
-                                start: rst,
-                                stop: rend,
-                                val: clip_direction,
-                            },
-                            suppl_itv: Interval {
-                                start: sa_start,
-                                stop: sa_end,
-                                val: sa_clip_direction,
-                            },
-                            read: String::from_utf8(read.to_vec())?,
-                        },
-                    }),
-                    // |  >|
-                    Direction::Right => sa_itvs.push(Interval {
-                        start: rend.saturating_sub(CLIP_OVL_DST),
-                        stop: rend + CLIP_OVL_DST,
-                        val: SupplIntervalSignals {
-                            chrom: chrom.to_owned(),
-                            itv: Interval {
-                                start: rst,
-                                stop: rend,
-                                val: clip_direction,
-                            },
-                            suppl_itv: Interval {
-                                start: sa_start,
-                                stop: sa_end,
-                                val: sa_clip_direction,
-                            },
-                            read: String::from_utf8(read.to_vec())?,
-                        },
-                    }),
-                    // |< >|
-                    Direction::Both => {
-                        sa_itvs.push(Interval {
-                            start: rst.saturating_sub(CLIP_OVL_DST),
-                            stop: rst + CLIP_OVL_DST,
-                            val: SupplIntervalSignals {
-                                chrom: chrom.to_owned(),
-                                itv: Interval {
+                        let sa_mapq: u8 = sa_mapq.parse().ok()?;
+                        let valid_mapq = sa_mapq >= del_min_mapq;
+                        let sa_clip_direction =
+                            get_clip_direction(sa_cigar.iter().flatten(), Some(&[
+                                Interval {
                                     start: rst,
-                                    stop: rend,
-                                    val: clip_direction,
-                                },
-                                suppl_itv: Interval {
-                                    start: sa_start,
-                                    stop: sa_end,
-                                    val: sa_clip_direction,
-                                },
-                                read: String::from_utf8(read.to_vec())?,
-                            },
-                        });
-                        sa_itvs.push(Interval {
-                            start: rend.saturating_sub(CLIP_OVL_DST),
-                            stop: rend + CLIP_OVL_DST,
-                            val: SupplIntervalSignals {
-                                chrom: chrom.to_owned(),
-                                itv: Interval {
-                                    start: rst,
-                                    stop: rend,
-                                    val: clip_direction,
-                                },
-                                suppl_itv: Interval {
-                                    start: sa_start,
-                                    stop: sa_end,
-                                    val: sa_clip_direction,
-                                },
-                                read: String::from_utf8(read.to_vec())?,
-                            },
-                        })
-                    }
-                };
-            }
+                                    stop: rstop,
+                                    val: clip_direction_prior
+                                }
+                            ]))?;
+                        if valid_mapq && same_chrom {
+                            Some(Interval {
+                                start: sa_start,
+                                stop: sa_stop,
+                                val: sa_clip_direction,
+                            })
+                        } else {
+                            None
+                        }
+                    },
+                )
+                .collect();
+            // Update with context of suppl alns
+            let clip_direction = get_clip_direction(cg.iter().flatten(), Some(&suppl_alns))
+                .with_context(|| {
+                    format!("Read {read} must have soft/hardclipped operation in cigar: {cg:?}")
+                })?;
+
+            itvs_sa.push(SupplIntervalSignals {
+                chrom: chrom.to_owned(),
+                itv: Interval {
+                    start: rst,
+                    stop: rstop,
+                    val: clip_direction,
+                },
+                suppl_itvs: suppl_alns,
+                read: String::from_utf8(read.to_vec())?,
+            });
         }
     }
 
     // Inversion supplementary read intersections
-    let itree_suppl_inv = Lapper::new(sa_itvs);
-    for sitv in itree_suppl_inv.iter() {
-        let mut ovl_itvs = itree_suppl_inv
-            .find(sitv.start, sitv.stop)
-            // Omit self
-            .filter(|oitv| oitv.val != sitv.val)
-            // Each overlapping interval should also overlap with its supplementary itv
-            // And should be different reads
-            .filter(|oitv| {
-                oitv.val
-                    .suppl_itv
-                    .overlap(sitv.val.suppl_itv.start, sitv.val.suppl_itv.stop)
-                    && sitv.val.read != oitv.val.read
-            })
-            .collect_vec();
-
-        if ovl_itvs.is_empty() {
-            continue;
-        }
-
-        let all_contained = ovl_itvs.iter().all(|oitv| {
-            itv.overlap(oitv.val.itv.start, oitv.val.itv.stop)
-                && itv.overlap(oitv.val.suppl_itv.start, oitv.val.suppl_itv.stop)
-        });
-        // If all contained in this window, means we're done
-        if all_contained {
-            match ovl_itvs.len() {
-                0 => unreachable!(),
-                1 => {
-                    let itv_1 = ovl_itvs[0];
-                    let Some(putative_type_1) =
-                        assign_type_by_clip_direction(&itv_1.val.itv, &itv_1.val.suppl_itv)
-                    else {
-                        continue;
-                    };
-
-                    let itv_span = itv_1.val.span();
-                    events.push(Event::SV(SV {
-                        itv: Interval {
-                            start: itv_span.start,
-                            stop: itv_span.stop,
-                            val: chrom.to_owned(),
-                        },
-                        reads: vec![itv_1.val.read.clone()],
-                        typ: putative_type_1,
-                    }));
-                }
-                2 => {
-                    let itv_1 = ovl_itvs[0];
-                    let itv_2 = ovl_itvs[1];
-
-                    let putative_type_1 =
-                        assign_type_by_clip_direction(&itv_1.val.itv, &itv_1.val.suppl_itv);
-                    let putative_type_2 =
-                        assign_type_by_clip_direction(&itv_2.val.itv, &itv_2.val.suppl_itv);
-
-                    let Some(putative_type) = (putative_type_1 == putative_type_2)
-                        .then_some(putative_type_1)
-                        .flatten()
-                    else {
-                        continue;
-                    };
-
-                    let itv_1_span = itv_1.val.span();
-                    let itv_2_span = itv_2.val.span();
-
-                    let min_start = std::cmp::min(itv_1_span.start, itv_2_span.start);
-                    let max_stop = std::cmp::min(itv_1_span.stop, itv_2_span.stop);
-
-                    events.push(Event::SV(SV {
-                        itv: Interval {
-                            start: min_start,
-                            stop: max_stop,
-                            val: chrom.to_owned(),
-                        },
-                        reads: vec![itv_1.val.read.clone()],
-                        typ: putative_type,
-                    }));
-                }
-                _ => {
-                    // Sort by read to chunk by
-                    ovl_itvs.sort_by(|a, b| a.val.read.cmp(&b.val.read));
-
-                    // Choose SV event based on clip direction changes
-                    for (read, grp) in &ovl_itvs.iter().chunk_by(|itv| &itv.val.read) {
-                        let sorted_suppl_itvs: Vec<_> = grp
-                            .into_iter()
-                            .flat_map(|itv| [&itv.val.itv, &itv.val.suppl_itv])
-                            .sorted()
-                            .dedup()
-                            .collect();
-
-                        // Transition from one clipping direction to the other
-                        // Deletion will only have one
-                        // Inversion will have multiple
-                        let mut n_clip_transitions = 0;
-                        for itv_slice in sorted_suppl_itvs.windows(2) {
-                            let (itv, next_itv) = (itv_slice[0], itv_slice[1]);
-                            if !matches!(
-                                (itv.val, next_itv.val),
-                                (Direction::Left, Direction::Left)
-                                    | (Direction::Right, Direction::Right)
-                            ) {
-                                n_clip_transitions += 1;
-                            }
-                        }
-                        // Case 1: Deletion
-                        // | >|   |< |
-                        // Case 2: Inversion
-                        // | >|   |< |
-                        //    |< >|
-                        // Case 3: TODO
-                        match (n_clip_transitions, sorted_suppl_itvs.len()) {
-                            (0, _) => (),
-                            (1, 2) => {
-                                let (itv, next_itv) = (sorted_suppl_itvs[0], sorted_suppl_itvs[1]);
-                                events.push(Event::SV(SV {
-                                    itv: Interval {
-                                        start: itv.stop,
-                                        stop: next_itv.start,
-                                        val: chrom.to_owned(),
-                                    },
-                                    reads: vec![read.to_owned()],
-                                    typ: SVType::Inversion,
-                                }));
-                            }
-                            (2, 3) => {
-                                let mid_itv = sorted_suppl_itvs[1];
-                                events.push(Event::SV(SV {
-                                    itv: Interval {
-                                        start: mid_itv.start,
-                                        stop: mid_itv.stop,
-                                        val: chrom.to_owned(),
-                                    },
-                                    reads: vec![read.to_owned()],
-                                    typ: SVType::Inversion,
-                                }));
-                            }
-                            _ => {
-                                log::debug!(
-                                    "Unexpected number of transitions ({n_clip_transitions}) of ovl_itvs ({}) for contained sitvs. {sorted_suppl_itvs:?}",
-                                    sorted_suppl_itvs.len()
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-        } else if let Some(putative_type) =
-            assign_type_by_clip_direction(&sitv.val.itv, &sitv.val.suppl_itv)
-        {
-            // Otherwise pass to postprocess step
-            match putative_type {
-                SVType::Deletion => {
-                    let span = sitv.val.span();
-                    events.push(Event::SV(SV {
-                        itv: Interval {
-                            start: span.start,
-                            stop: span.stop,
-                            val: chrom.to_owned(),
-                        },
-                        reads: vec![sitv.val.read.clone()],
-                        typ: putative_type,
-                    }));
-                }
-                SVType::Inversion => {
-                    events.push(Event::Signal(Signal::SupplSignal(sitv.val.clone())))
-                }
-            }
-        }
-    }
+    let suppl_events = detect_suppl_sv_events(&itvs_sa, chrom);
+    events.extend(suppl_events);
 
     Ok(events)
 }
