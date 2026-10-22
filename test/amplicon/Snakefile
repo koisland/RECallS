@@ -1,83 +1,83 @@
 from os.path import join
 
-FNAME_PREFIX = "chm13_chr7"
-OUTDIR = "test/amplicon"
-LOGDIR = "test/amplicon/logs"
+FNAME_PREFIX = config.get("fname_prefix", "chm13_chr7")
+OUTDIR = config.get("outdir", "test/amplicon")
+LOGDIR = config.get("logdir", "test/amplicon/logs")
+REF = config.get("ref", join(OUTDIR, f"{FNAME_PREFIX}.fa.gz"))
 
-REF = join(OUTDIR, f"{FNAME_PREFIX}.fa.gz")
-# TODO: Scale up
-SEEDS = [42, 232323, 120, 430000032]
-EVENTS = ["inversion", "inversion", "deletion", "deletion"]
-OPTS = ["", "", "", "-d '[1_000_000, 10_000_000]'"]
-OPTS = {
-    (seed, event): opts
-    for seed, event, opts in zip(SEEDS, EVENTS, OPTS, strict=True)
-}
 
+# TODO: Split by chromosome to speed up
 rule get_lcr_regions:
     input:
-        fa=REF
+        fa=REF,
     output:
-        bed=join(OUTDIR, f"{FNAME_PREFIX}_lcr.bed")
+        bed=join(OUTDIR, f"{FNAME_PREFIX}_lcr.bed"),
     log:
-        join(LOGDIR, "get_lcr_regions.log")
+        join(LOGDIR, "get_lcr_regions.log"),
     shell:
         """
-        longdust {input.fa} > {output.bed} 2> {log}
+        longdust {input.fa} >{output.bed} 2>{log}
         """
 
 
-rule simulate_nahr_event:
+checkpoint simulate_nahr_event:
     input:
         fa=REF,
-        lcr_bed=rules.get_lcr_regions.output
+        lcr_bed=rules.get_lcr_regions.output,
     output:
-        fa=join(OUTDIR, f"{FNAME_PREFIX}_sim_{{event}}_{{seed}}_after_event.fa"),
-        bed=join(OUTDIR, f"{FNAME_PREFIX}_sim_{{event}}_{{seed}}_event.bed"),
-    params:
-        seed="{seed}",
-        event="{event}",
-        min_plot_length=50_000,
-        opts=lambda wc: OPTS[(int(wc.seed), wc.event)],
-        output_prefix=lambda wc, output: output.fa.replace("_after_event.fa", ""),
-        script="test/amplicon/denovo_inv_create.py"
+        fa=join(OUTDIR, f"{FNAME_PREFIX}_sim_after_event.fa.gz"),
+        fa_outdir=join(OUTDIR, f"{FNAME_PREFIX}_sim_after_event_fa"),
+        bed=join(OUTDIR, f"{FNAME_PREFIX}_sim_event.bed"),
     log:
-        join(LOGDIR, "simulate_{event}_{seed}.log")
+        join(LOGDIR, "simulate_events.log"),
+    threads: 24
+    params:
+        opts=lambda wc: "",
+        events=" ".join(["inversion", "deletion"]),
+        fa_uncompressed=lambda wc, output: output.fa.replace(".gz", ""),
+        output_prefix=lambda wc, output: output.fa.replace("_after_event.fa.gz", ""),
+        script="test/amplicon/denovo_inv_create.py",
     shell:
         """
         python {params.script} \
-        -f {input.fa} \
-        -s {params.seed} \
-        -pl {params.min_plot_length} \
-        -n <(awk '$3-$2>500' {input.lcr_bed}) \
-        -e {params.event} \
-        -o {params.output_prefix} {params.opts} 2> {log}
+            -f {input.fa} \
+            -n <(awk '$3-$2>500' {input.lcr_bed}) \
+            -e {params.events} \
+            --no_plot --all \
+            -o {params.output_prefix} {params.opts} 2>{log}
+        bgzip -@{threads} {params.fa_uncompressed}
+        samtools faidx {output.fa}
+        seqkit split -i --by-id-prefix "" -O {output.fa_outdir} {output.fa}
         """
+
 
 rule simulate_nahr_event_reads:
     input:
-        fa=rules.simulate_nahr_event.output.fa
+        fa=join(rules.simulate_nahr_event.output.fa_outdir, "{fname}.fa.gz"),
     output:
-        fq=join(OUTDIR, f"{FNAME_PREFIX}_sim_{{event}}_{{seed}}.fq.gz"),
+        fq=join(OUTDIR, f"{FNAME_PREFIX}_sim_{{fname}}.fq.gz"),
+    log:
+        join(LOGDIR, "simulate_reads_{fname}.log"),
     params:
-        seed="{seed}",
+        seed=42,
         depth="1x",
         error_model="pacbio2021",
         qscore_model="pacbio2021",
         identity="30,3",
-    log:
-        join(LOGDIR, "simulate_reads_{event}_{seed}.log")
     shell:
         """
         badread simulate \
-        --reference {input.fa} \
-        --quantity {params.depth} \
-        --error_model {params.error_model} \
-        --qscore_model {params.qscore_model} \
-        --identity {params.identity} \
-        --start_adapter_seq "" --end_adapter_seq "" \
-        --seed {params.seed} 2> {log} | bgzip > {output.fq}
+            --reference {input.fa} \
+            --quantity {params.depth} \
+            --error_model {params.error_model} \
+            --qscore_model {params.qscore_model} \
+            --identity {params.identity} \
+            --start_adapter_seq "" --end_adapter_seq "" \
+            --seed {params.seed} 2>{log} \
+            | seqkit replace -p $ -r ' EV:Z:{wildcards.fname}' - \
+            | bgzip >{output.fq}
         """
+
 
 use rule simulate_nahr_event_reads as simulate_normal_reads with:
     input:
@@ -85,7 +85,7 @@ use rule simulate_nahr_event_reads as simulate_normal_reads with:
     output:
         fq=join(OUTDIR, f"{FNAME_PREFIX}_sim_norm.fq.gz"),
     log:
-        join(LOGDIR, "simulate_reads_norm.log")
+        join(LOGDIR, "simulate_reads_norm.log"),
     params:
         seed=9999,
         depth="5x",
@@ -93,36 +93,38 @@ use rule simulate_nahr_event_reads as simulate_normal_reads with:
         qscore_model="pacbio2021",
         identity="30,3",
 
+
+def simulated_nahr_reads(wc):
+    outdir = checkpoints.simulate_nahr_event.get(**wc).output.fa_outdir
+    fnames = glob_wildcards(join(outdir, "{fname}.fa.gz")).fname
+    return expand(rules.simulate_nahr_event_reads.output, fname=fnames)
+
+
 rule dsa_align:
     input:
         ref=REF,
-        reads=[
-            rules.simulate_normal_reads.output,
-            expand(
-                rules.simulate_nahr_event_reads.output,
-                zip,
-                event=EVENTS,
-                seed=SEEDS
-            ),
-        ]
+        reads=lambda wc: [
+            *list(rules.simulate_normal_reads.output),
+            *simulated_nahr_reads(wc),
+        ],
     output:
         bam=join(OUTDIR, f"{FNAME_PREFIX}_sim.bam"),
         bai=join(OUTDIR, f"{FNAME_PREFIX}_sim.bam.bai"),
     log:
-        join(LOGDIR, "dsa_align.log")
+        join(LOGDIR, "dsa_align.log"),
+    threads: 24
     params:
         preset="lr:hq",
-    threads:
-        8
     shell:
         """
         {{ minimap2 --eqx -Y -ax {params.preset} {input.ref} {input.reads} -t {threads} \
             | samtools sort -u - \
-            | samtools view -bh -o {output.bam} ;}} 2> {log}
-        samtools index {output.bam} 2>> {log}
+            | samtools view -bh -o {output.bam} ;}} 2>{log}
+        samtools index {output.bam} 2>>{log}
         """
-    
+
+
 rule all:
     default_target: True
     input:
-        rules.dsa_align.output
+        rules.dsa_align.output,

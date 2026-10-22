@@ -1,8 +1,10 @@
-# Data
+# Workflow
+To simulate plausible NAHR events.
 
 ## Usage
+This generates NAHR deletion/inversion events across all homologous regions on chr7 of CHM13v2.0.
 ```bash
-snakemake -c 8 -s test/amplicon/Snakefile -np
+snakemake -c 8 -s test/amplicon/Snakefile -np --rerun-triggers mtime
 ```
 
 ## Steps

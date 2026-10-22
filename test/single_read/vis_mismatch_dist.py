@@ -37,33 +37,25 @@ EVENTS = {
     "other_event": "m84108_241123_231350_s2/126487957",
 }
 
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument(
         "-i",
         "--infile",
         type=str,
-        default="/home/koisland/Projects/RECallS/test/single_read/CT22_ENA_CBCUDK010000011_CBCUDK010000011.1_6335921-6341074.bam"
+        default="/home/koisland/Projects/RECallS/test/single_read/CT22_ENA_CBCUDK010000011_CBCUDK010000011.1_6335921-6341074.bam",
     )
     ap.add_argument(
         "-r",
         "--region",
         type=str,
-        default="ENA_CBCUDK010000011_CBCUDK010000011.1:6317808-6359969"
+        default="ENA_CBCUDK010000011_CBCUDK010000011.1:6317808-6359969",
     )
     ap.add_argument(
-        "-l",
-        "--list_reads",
-        nargs="*",
-        type=str,
-        default=set(EVENTS.values())
+        "-l", "--list_reads", nargs="*", type=str, default=set(EVENTS.values())
     )
-    ap.add_argument(
-        "-o",
-        "--output_dir",
-        type=str,
-        default="."
-    )
+    ap.add_argument("-o", "--output_dir", type=str, default=".")
     args = ap.parse_args()
     infile = args.infile
     region = args.region
@@ -74,7 +66,7 @@ def main():
     chrom, coords = region.split(":")
     st, end = coords.split("-")
     st, end = int(st), int(end)
-    
+
     # https://stackoverflow.com/questions/49293019/calculating-probability-distribution-from-time-series-data-in-python
     fh = pysam.AlignmentFile(infile)
     qry = fh.fetch(chrom, st, end)
@@ -106,7 +98,7 @@ def main():
 
             if qpos:
                 prev_qpos = qpos
-        
+
         x = np.linspace(0, read_aln_len, window)
         midpt = read_aln_len / 2
         x_left = (0, midpt)
@@ -139,27 +131,29 @@ def main():
             0,
             kde(x_integral_left),
             alpha=0.3,
-            color='b',
-            label="Left area: {:.3f}".format(integral_left)
+            color="b",
+            label="Left area: {:.3f}".format(integral_left),
         )
         plt.fill_between(
             x_integral_right,
             0,
             kde(x_integral_right),
             alpha=0.3,
-            color='r',
-            label="Right area: {:.3f}".format(integral_right)
+            color="r",
+            label="Right area: {:.3f}".format(integral_right),
         )
         plt.xlabel("Read position (bp)")
         plt.ylabel("PDF value")
         plt.ylim(bottom=0)
         plt.legend()
-        out_img = os.path.join(output_dir, f"{read_name.replace("/", "_")}_{status}.png")
+        out_img = os.path.join(
+            output_dir, f"{read_name.replace('/', '_')}_{status}.png"
+        )
         plt.savefig(out_img, dpi=300, bbox_inches="tight")
         plt.clf()
 
-
     fh.close()
+
 
 if __name__ == "__main__":
     raise SystemExit(main())
