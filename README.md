@@ -63,12 +63,12 @@ recalls
 Where:
 |name|desc|
 |-|-|
-|`calls.bed`|Putative intrachromosomal inversion and deletion events|
+|`calls.bed`|Putative intrachromosomal inversion and deletion events.<br>With format: `chrom`, `chromStart`, `chromEnd`, `name` (reads involved), `score` (0), `strand` (.), `thickStart` (same as `chromStart`), `thickEnd` (same as `chromEnd`), `itemRgb` (`255,0,0` for deletion based on supplementary alignments, `0,0,255` for inversion based on supplementary alignments, and `0,128,128` for inferred inversion based on unbalanced SNV signals.)|
 |`*.bam`|(Optional with `-g`) Tagged BAM file with only reads involved in `calls.bed`. Custom tag `EV` marks what event type.|
 |`chrom_indel_stats.tsv`|Chromosome read indel stats for primary and secondary alignments|
 
 ## Docs
-See [`docs/long_distance.md`](docs/long_distance.md) for overview.
+See [`docs/long_distance.md`](docs/long_distance.md) for overview slides.
 
 ## Test
 To generate simulated data in CHM13 chr7.
